@@ -1,14 +1,14 @@
 # Αρχείο για το αρχικό μενού με επιλογές "New player" (νέος παίκτης), "Returing player" (παίκτης που έχει ξανα παίξει)
 
 import arcade   
-import math     # Βιβλιοθήκη για pulse εφέ σε text
+import math     # Βιβλιοθήκη για pulse εφέ σε κείμενο
 
 class MenuView(arcade.View):
     def __init__(self):
         super().__init__()
 
-        self.options = ["New Game", "Returning Player"]
-        self.selected = 0
+        self.options = ["New Game", "Returning Player"] # Λίστα με επιλογές για τα κουμπιά
+        self.selected = 0               # Μεταβλητή για επιλογή text
 
         self.pulseTimer = 0.0           # Μεταβλητή για pulse timer
 
@@ -61,89 +61,94 @@ class MenuView(arcade.View):
         self.menu_texts[1].x = cx
         self.menu_texts[1].y = cy - 40
 
-    # Μέθοδος 
+    # Μέθοδος για την κίνηση του mouse
     def on_mouse_motion(self, x, y, dx, dy):
         self.hovered = None     # clear της κατάστασης της μεταβλητής αρχικά
 
         for i, text in enumerate(self.menu_texts):  # Για κάθε επιλογή στη λίστα μενού παίρνουμε το index και την επιλογή
-            if self._hit_text(text, x, y):          # Αν το ποντίκι είναι πάνω σε κείμενο που βρίσκεται στη λίστα
+            if self.hit_text(text, x, y):           # Αν το ποντίκι είναι πάνω σε κείμενο που βρίσκεται στη λίστα
                 self.hovered = i                    # Αποθήκευση του index της επιλογής του μενού στη μεταβλητή
                 self.selected = i
                 break
 
-    def _hit_text(self, text: arcade.Text, mouse_x: float, mouse_y: float) -> bool:
-        # Πλάτος/ύψος του κειμένου
-        w = text.content_width
-        h = text.content_height
+    # Μέθοδος για έλεγχο hitbox του mouse στα text της λίστας
+    def hit_text(self, text: arcade.Text, mouse_x: float, mouse_y: float) -> bool:
+        w = text.content_width  # Πλάτος του κειμένου
+        h = text.content_height # Ύψος του κειμένου
 
-        # Επειδή έχεις anchor_x="center", το x είναι το κέντρο
+        # Υπολογισμός ορίων δεξιά, αριστερά
         left = text.x - w / 2
         right = text.x + w / 2
 
-        # Για y: Arcade Text χρησιμοποιεί y σαν "baseline" περίπου,
-        # οπότε για hitbox παίρνουμε ένα πρακτικό κουτί γύρω του:
+        # Υπολογισμός ορίων πάνω, κάτω
         bottom = text.y - h * 0.2
-        top = text.y + h * 0.8
+        top = text.y + h * 0.8          
 
+        # Επιστρέφει αν το ποντίκι είναι μέσα στα παραπάνω όρια
         return left <= mouse_x <= right and bottom <= mouse_y <= top
 
 
-    # 3) Mouse click επιλογή
+    # Μέθοδος για mouse click επιλογή
     def on_mouse_press(self, x: float, y: float, button: int, modifiers: int):
-        # Αν ο χρήστης κάνει κλικ σε μία επιλογή, την επιλέγουμε
-        for i, text in enumerate(self.menu_texts):
-            if self._hit_text(text, x, y):
-                self.selected = i
+        for i, text in enumerate(self.menu_texts):      # Αν ο χρήστης κάνει κλικ σε μία επιλογή της λίστας του μενού
+            if self.hit_text(text, x, y):
+                self.selected = i                       # αυτή επιλέγεται
 
-                # Αν θες ΜΕ ΕΝΑ κλικ να κάνει και confirm, ξεσχόλιασε:
-                self._confirm()
+                self.confirm()                          # Προχωράει στην επόμενη ενέργεια
                 return
 
+    # Μέθοδος για εφέ σε κείμενο
     def on_update(self, delta_time: float):
-        # Blink (alpha pulse) only on selected option
         self.pulseTimer += delta_time
-        alpha = int(128 + 127 * math.sin(self.pulseTimer * 4.0))  # 0..255 pulse
+        
+        title_alpha = int(128 + 127 * math.sin(self.pulseTimer * 1.0))  # Εφέ παλμού
+        self.title_text.color = (100, 150, 255, title_alpha)  # Μπλε χρώμα παλμού για την επικεφαλίδα
 
-        for i, text in enumerate(self.menu_texts):
-            if i == self.selected:
-                # Yellow with pulsing alpha
-                text.color = (255, 255, 0, alpha)
+        alpha = int(128 + 127 * math.sin(self.pulseTimer * 4.0))  # Εφέ παλμού
+
+        for i, text in enumerate(self.menu_texts):      # Για κάθε επιλογή στη λίστα μενού
+            if i == self.selected:                      # Αν το στοιχείο είναι επιλεγμένο
+                text.color = (255, 255, 0, alpha)       # Αναβοσβήνει σε κίτρινο χρώμα
             else:
-                text.color = arcade.color.WHITE
+                text.color = arcade.color.WHITE         # Αλλιώς μένει άσπρο 
 
+    # Μέθοδος για την εμφάνιση των αντικειμένων της κλάσης
     def on_draw(self):
-        self.clear()
-        self.title_text.draw()
+        self.clear()                # Καθαρίζει το παράθυρο από το προηγούμενο frame και ορίζει το background
+        self.title_text.draw()      # Εμφάνιση τίτλου 
 
-        for text in self.menu_texts:
-            text.draw()
+        for text in self.menu_texts:    # Για κάθε επιλογή που υπάρχει στη λίστα μενού
+            text.draw()                 # Ζωγραφίζει το αντίστοιχο κείμενο στην οθόνη
 
         # self.hint_text.draw()
 
+    # Μέθοδος για λειτουργία πλήκτρων
     def on_key_press(self, key, modifiers):
-        if key == arcade.key.UP:
+        if key == arcade.key.UP:    # Αν πατηθεί το πάνω βελάκι, μετακινούμαστε στην προηγούμενη επιλογή κυκλικά
             self.selected = (self.selected - 1) % len(self.options)
-            self.hovered = None
+            self.hovered = None     # Γίνεται clear το hover του mouse
 
-        elif key == arcade.key.DOWN:
+        elif key == arcade.key.DOWN:    # Αν πατηθεί το κάτω βελάκι, μετακινούμαστε στην επόμενη επιλογή κυκλικά
             self.selected = (self.selected + 1) % len(self.options)
-            self.hovered = None
+            self.hovered = None     # Γίνεται clear το hover του mouse
 
-        elif key == arcade.key.ENTER:
-            self._confirm()
+        elif key == arcade.key.ENTER:   # Με enter πάμε στο επόμενο action
+            self.confirm()
 
-        elif key == arcade.key.ESCAPE:
+        elif key == arcade.key.ESCAPE:  # Με escape κλείνει το παράθυρο
             self.window.close()
 
-    def _confirm(self):
-        # Store selection on window so the rest of the client can read it later
+    # Επιβεβαίωση της επιλογής και εκτέλεση του επόμενου action
+    def confirm(self):
+        # Αποθηκεύει την επιλογή στο παράθυρο ώστε να είναι διαθέσιμη και στα επόμενα Views
         self.window.game_mode = "NEW_GAME" if self.selected == 0 else "RETURNING_PLAYER"
 
-        # Move on (client.py defines window.start_game)
+        # Προσπαθεί να βρει στο window μια μέθοδο start_game (αν δεν υπάρχει, παίρνει None)
         start_game = getattr(self.window, "start_game", None)
+
+        # Αν υπάρχει και είναι callable, ξεκινά το παιχνίδι
         if callable(start_game):
             start_game()
         else:
-            # Safety fallback if start_game wasn't attached
-            print("[StartView] window.start_game() not found. Did you attach it in main()?")
+            # Αν δεν υπάρχει το start_game τερματίζει το πρόγραμμα
             arcade.exit()
