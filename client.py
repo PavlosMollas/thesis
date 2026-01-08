@@ -8,6 +8,8 @@ import uuid
 import sys
 import time
 from login import MenuView
+from playerView import CreatePlayerView
+import os
 
 
 # ============================
@@ -16,8 +18,7 @@ from login import MenuView
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Unique ID per client
-PLAYER_ID = str(uuid.uuid4())[:8]
+CLIENT_PLAYER_ID = None
 
 # Shared game state from server (thread-safe)no
 state_queue = Queue()
@@ -44,6 +45,8 @@ sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 control_socket = ctx.socket(zmq.REQ)
 control_socket.connect("tcp://127.0.0.1:5557")
 
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
 
 # ========================================================
 # ASYNC NETWORKING
@@ -52,7 +55,7 @@ control_socket.connect("tcp://127.0.0.1:5557")
 async def send_move(direction: str):
     """Send a movement event to the server."""
     await push_socket.send_json({
-        "id": PLAYER_ID,
+        "id": CLIENT_PLAYER_ID,
         "move": direction
     })
 
@@ -71,7 +74,7 @@ async def control_loop():
     # ---- CONNECT ----
     await control_socket.send_json({
         "type": "connect",
-        "id": PLAYER_ID
+        "id": CLIENT_PLAYER_ID
     })
     reply = await control_socket.recv_json()
     print("[Control reply]:", reply)
@@ -93,7 +96,7 @@ async def control_loop():
     try:
         await control_socket.send_json({
             "type": "disconnect",
-            "id": PLAYER_ID
+            "id": CLIENT_PLAYER_ID
         })
         await control_socket.recv_json()
     except Exception as e:
@@ -174,11 +177,12 @@ class MyGame(arcade.View):
         self.match_started = False
         self.elapsed_time = 0.0
 
-        # PLAYER SPRITE
-        tex_red = arcade.make_soft_square_texture(40, arcade.color.RED, 255)
-        self.player_sprite = arcade.Sprite()
-        self.player_sprite.append_texture(tex_red)
-        self.player_sprite.set_texture(0)
+        # PLAYER SPRITE (LOCAL PLAYER)
+        self.player_sprite = arcade.Sprite(
+            "assets/sniper_marksmanN.png",
+            scale=1.0
+        )
+        self.player_sprite.hit_box_algorithm = "Simple"
 
         self.player_list = arcade.SpriteList()
         self.player_list.append(self.player_sprite)
@@ -186,8 +190,9 @@ class MyGame(arcade.View):
         # OTHER PLAYERS
         self.other_sprites = {}        # pid -> Sprite
         self.other_list = arcade.SpriteList()
-        self.green_tex = arcade.make_soft_square_texture(40, arcade.color.GREEN, 255)
 
+        self.other_texture = "assets/doublePistol_marksmanN.png"
+        
         # --- SMOOTHING STRUCTURES ---
         # pid -> [(x0, y0, t0), (x1, y1, t1)]
         self.position_buffers = {}
@@ -236,7 +241,7 @@ class MyGame(arcade.View):
         if not self.match_started:
             self.waiting_text.draw()
 
-    def _process_server_state(self):
+    def process_server_state(self):
         """
         Παίρνει ΤΕΛΕΥΤΑΙΟ state από την ουρά και
         ενημερώνει τα buffers / snapshots.
@@ -275,13 +280,15 @@ class MyGame(arcade.View):
             y = pos["y"]
 
             # Διάλεξε το σωστό sprite
-            if pid == PLAYER_ID:
+            if pid == CLIENT_PLAYER_ID:
                 sprite = self.player_sprite
             else:
                 if pid not in self.other_sprites:
-                    spr = arcade.Sprite()
-                    spr.append_texture(self.green_tex)
-                    spr.set_texture(0)
+                    spr = arcade.Sprite(
+                        self.other_texture,
+                        scale=1.0
+                    )
+                    spr.hit_box_algorithm = "Simple"
                     self.other_sprites[pid] = spr
                     self.other_list.append(spr)
                 sprite = self.other_sprites[pid]
@@ -310,12 +317,12 @@ class MyGame(arcade.View):
 
         return players_state
 
-    def _apply_smoothing(self, delta_time):
+    def apply_smoothing(self, delta_time):
         """
         Κάνει extrapolation + interpolation για ΟΛΟΥΣ τους παίκτες.
         """
         # Μαζεύουμε όλα τα sprites (εσύ + άλλοι)
-        all_sprites = {PLAYER_ID: self.player_sprite}
+        all_sprites = {CLIENT_PLAYER_ID: self.player_sprite}
         all_sprites.update(self.other_sprites)
 
         for pid, sprite in all_sprites.items():
@@ -377,10 +384,10 @@ class MyGame(arcade.View):
         3) Στέλνει input προς τον server
         """
         # 1) Επεξεργασία τελευταίου server state (γεμίζει buffers)
-        self._process_server_state()
+        self.process_server_state()
 
         # 2) Εφαρμογή smoothing σε όλους
-        self._apply_smoothing(delta_time)
+        self.apply_smoothing(delta_time)
 
         # 3) Συνεχές input προς τον server
         if NETWORK_LOOP is not None and self.match_started:
@@ -399,30 +406,6 @@ class MyGame(arcade.View):
     def on_key_release(self, key, modifiers):
         if key in self.held_keys:
             self.held_keys.remove(key)
-    
-    # def on_deactivate(self):
-    #     self.held_keys.clear()
-
-    # def on_activate(self):
-    #     self.held_keys.clear()
-
-    # def on_hide(self):
-    #     self.held_keys.clear()
-
-    # def on_show(self):
-    #     self.held_keys.clear()
-
-    # def on_close(self):
-    #     """Arcade window closed → ενημερώνουμε το control_loop να στείλει DISCONNECT."""
-    #     global CONTROL_ACTIVE
-    #     CONTROL_ACTIVE = False
-    #     print("Window closed, will send DISCONNECT...")
-    #     super().on_close()
-
-
-# ========================================================
-# MAIN ENTRY
-# ========================================================
 
 def main():
     global SERVER_ACCEPTED, DISCONNECT_SENT
@@ -432,13 +415,21 @@ def main():
     window.network_started = False
 
     def start_game():
-        global SERVER_ACCEPTED
+        global SERVER_ACCEPTED, CLIENT_PLAYER_ID
+
+        if window.game_mode == "NEW_GAME":
+            if not hasattr(window, "player_id"):
+                window.show_view(CreatePlayerView())
+                return
+
+        CLIENT_PLAYER_ID = window.player_id
 
         # Αποφεύγουμε να ξεκινήσει 2 φορές thread αν πατηθεί ξανά Enter
         if not window.network_started:
             window.network_started = True
             SERVER_ACCEPTED = None  # reset πριν το connect
             t = threading.Thread(target=thread_worker, daemon=True)
+            print("CLIENT_PLAYER_ID =", CLIENT_PLAYER_ID)
             t.start()
 
         # Αντί να περιμένουμε εδώ (freeze), δείχνουμε ConnectingView
@@ -457,7 +448,6 @@ def main():
             time.sleep(0.01)
 
     sys.exit(0)
-
 
 if __name__ == "__main__":
     main()
