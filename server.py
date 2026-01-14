@@ -3,10 +3,33 @@ import zmq
 import zmq.asyncio
 import sys
 import time
+import arcade
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+TILE_SCALING = 1.0                      # Scale Πλακιδίων
+
+tile_map = arcade.load_tilemap(
+    "assets/maps/firstRegion.tmx",      # Φόρτωση χάρτη από το tiled
+    scaling=TILE_SCALING,
+    use_spatial_hash=True               # Το collision γίνεται μόνο με κοντινά αντικείμενα (βελτίωση απόδοσης)
+)
+
+wall_list = tile_map.sprite_lists["Walls"]  # Παίρνουμε το walls layer του tiled για να βάλουμε collision μόνο σε αυτά
+
+# Διαστάσεις χάρτη σε pixels
+MAP_WIDTH  = tile_map.width * tile_map.tile_width
+MAP_HEIGHT = tile_map.height * tile_map.tile_height
+
+# Διαστάσεις παίκτη
+PLAYER_WIDTH  = 32
+PLAYER_HEIGHT = 48
+
+SPEED = 5             # Ταχύτητα κίνησης του παίκτη
+
+server_start_time = time.time() # Χρόνος παιχνιδιού
 
 ctx = zmq.asyncio.Context()     # Δημιουργία του zmq context για τη σύνδεση με τα sockets
 
@@ -25,60 +48,56 @@ control_socket.bind("tcp://*:5557") # Ακούμε για αιτήματα σύ�
 # Player data: Λεξικό που περιέχει τα δεδομένα των παικτών
 players = {}          # pid → {x, y} (πληροφορίες για την θέση κάθε παίκτη)
 
-connected = []        # Λίστα παικτών σε σειρά σύνδεσης
-SPEED = 5             # Ταχύτητα κίνησης του παίκτη
+connected = set()     # Σύνολο παικτών σε σειρά σύνδεσης
 
-MAX_PLAYERS = 2  # limit players
+spawn_points = []     # Λίστα για το spawn παικτών
+next_spawn_index = 0
 
-# Fixed spawn points
-LEFT_SPAWN  = (200, 300)
-RIGHT_SPAWN = (600, 300)
+object_layer = tile_map.object_lists.get("Object")  # Παίρνουμε το object layer για το spawn 
 
-match_started = False       # Ελέγχει αν το παιχνίδι έχει ξεκινήσει
-match_start_time = None     # Χρόνος που ξεκίνησε το παιχνίδι
+if not object_layer:
+    raise RuntimeError("No Object layer found in TMX map")
+
+for obj in object_layer:
+    if obj.name == "player_spawn":  # Για κάθε object με το όνομα player_spawn (έτσι έχει ονομαστεί στο tiled), προσθέτουμε το σημείο στη λίστα
+        x, y = obj.shape
+        spawn_points.append((x, y))
+
+if not spawn_points:
+    raise RuntimeError("No player_spawn objects found in Object layer")
+
+print("Spawn points loaded from TMX:", spawn_points)
 
 TICK_DT = 0.02      # Η διάρκεια κάθε "tick" σε δευτερόλεπτα (ρυθμίζει το frame rate)
 tick = 0            # Μετρητής "tick" για το παιχνίδι
 
 # Μέθοδος για το state των παικτών
 async def handle_control():
-    global match_started, match_start_time
-
+    global next_spawn_index
     while True:
         msg = await control_socket.recv_json()  # Περιμένει και λαμβάνει τα μηνύματα ελέγχου
         pid = msg["id"]     # Το id του παίκτη
         typ = msg["type"]   # Τύπος αιτήματος (σύνδεση ή αποσύνδεση)
 
-        # Σύνδεση παίκτη
         if typ == "connect":
-            # Αν ο server είναι γεμάτος, απορρίπτει τη σύνδεση
-            if len(connected) >= MAX_PLAYERS:
-                print(f"Player {pid} rejected: server full.")
-                await control_socket.send_json({"status": "full"})
+            if pid in connected:
+                await control_socket.send_json({"status": "ok"})
                 continue
 
-            # Προσθήκη του παίκτη στη λίστα των συνδεδεμένων
-            connected.append(pid)
-            slot = len(connected)       # Δημιουργία της θέσης του παίκτη (slot)
-            print(f"Player {pid} CONNECTED as slot {len(connected)}")
+            # Προσθήκη του παίκτη στo σύνολο των συνδεδεμένων
+            connected.add(pid)
 
-            # Ανάθεση θέσης παικτών
-            if len(connected) == 1:      # first player
-                x, y = LEFT_SPAWN
-            else:                        # second player
-                x, y = RIGHT_SPAWN
+            # Spawn place
+            spawn_index = next_spawn_index
+            next_spawn_index += 1
 
+            x, y = spawn_points[spawn_index % len(spawn_points)]
             players[pid] = {"x": x, "y": y} # Αποθήκευση θέσης παίκτη
 
-            # Ξεκινάει το παιχνίδι μόλις μπουν 2 παίκτες
-            if len(connected) == MAX_PLAYERS and not match_started:
-                match_started = True
-                match_start_time = time.time()  # Χρόνος έναρξης παιχνιδιού
-                print("MATCH STARTED")
+            print(f"Player {pid} CONNECTED at spawn {spawn_index}")
 
             await control_socket.send_json({
                 "status": "ok",
-                "slot": slot        # Επιστρέφει την θέση του παίκτη (slot)
             })
 
         # Αποσύνδεση παίκτη
@@ -92,10 +111,26 @@ async def handle_control():
 
             await control_socket.send_json({"status": "ok"})
 
-            # Αν δεν υπάρχουν άλλοι παίκτες, κλείνει ο server
-            if len(connected) == 0:
-                print("All players left. Shutting down server.")
-                sys.exit(0)
+# Μέθοδος για το collision
+def collides_with_walls(x, y):
+    # Υπολογισμός ορίων του παίκτη
+    # με βάση το κέντρο του (x, y) και τις διαστάσεις του sprite
+    left   = x - PLAYER_WIDTH / 2
+    right  = x + PLAYER_WIDTH / 2
+    bottom = y - PLAYER_HEIGHT / 2
+    top    = y + PLAYER_HEIGHT / 2
+
+    # Έλεγχος σύγκρουσης με κάθε wall sprite
+    for wall in wall_list:
+        if (
+            right  > wall.left and      # ο παίκτης δεν είναι τελείως αριστερά
+            left   < wall.right and     # ο παίκτης δεν είναι τελείως δεξιά
+            top    > wall.bottom and    # ο παίκτης δεν είναι τελείως κάτω
+            bottom < wall.top           # ο παίκτης δεν είναι τελείως πάνω
+        ):
+            return True
+
+    return False
 
 # Μέθοδος για τα inputs
 async def handle_inputs():
@@ -104,10 +139,6 @@ async def handle_inputs():
         pid = msg["id"]
         direction = msg["move"]
 
-        # Αγνοούμε input αν το match δεν ξεκίνησε
-        if not match_started:
-            continue
-
         # Αγνοεί τις κινήσεις από παίκτες που δεν είναι συνδεδεμένοι
         if pid not in players:
             continue
@@ -115,41 +146,49 @@ async def handle_inputs():
         p = players[pid]    # Παίκτης που στέλνει την κίνηση
 
         # Κίνηση του παίκτη με βάση την εισερχόμενη εντολή
-        if direction == "UP":
-            p["y"] += SPEED
-        elif direction == "DOWN":
-            p["y"] -= SPEED
-        elif direction == "LEFT":
-            p["x"] -= SPEED
-        elif direction == "RIGHT":
-            p["x"] += SPEED
+        new_x = p["x"]
+        new_y = p["y"]
 
+        # Εφαρμογή κίνησης με βάση την εντολή που έστειλε ο client
+        if direction == "UP":
+            new_y += SPEED
+        elif direction == "DOWN":
+            new_y -= SPEED
+        elif direction == "LEFT":
+            new_x -= SPEED
+        elif direction == "RIGHT":
+            new_x += SPEED
+
+        # Περιορισμός της νέας θέσης ώστε ο παίκτης να μην βγει εκτός των ορίων του χάρτη
+        new_x = max(PLAYER_WIDTH / 2, min(new_x, MAP_WIDTH - PLAYER_WIDTH / 2))
+        new_y = max(PLAYER_HEIGHT / 2, min(new_y, MAP_HEIGHT - PLAYER_HEIGHT / 2))
+
+        # Έλεγχος collision
+        if not collides_with_walls(new_x, p["y"]):
+            p["x"] = new_x
+
+        if not collides_with_walls(p["x"], new_y):
+            p["y"] = new_y        
 
 # Μέθοδος για τη μετάδοση κατάστασης παιχνιδιού
 async def broadcast_state():
     while True:
-        # Υπολογισμός του χρόνου παιχνιδιού
-        if match_started and match_start_time is not None:
-            elapsed_time = time.time() - match_start_time
-        else:
-            elapsed_time = 0.0
-
         global tick
         tick += 1       # Αύξηση του tick για κάθε frame
+
+        elapsed_time = time.time() - server_start_time
 
         # Στέλνει την κατάσταση του παιχνιδιού σε όλους τους πελάτες
         await pub_socket.send_json({
             "tick": tick,
             "tick_dt": TICK_DT,             # Διάρκεια κάθε "tick"
-            "players": players,             # Κατάσταση των παικτών
-            "match_started": match_started, # Αν έχει ξεκινήσει το παιχνίδι
+            "players": dict(players),             # Κατάσταση των παικτών
             "elapsed_time": elapsed_time    # Χρόνος που έχει περάσει από την έναρξη
         })
 
         await asyncio.sleep(TICK_DT)  # 50 FPS, ρυθμός ανανέωσης 20ms
 
 async def main():
-    print("Server running with max 2 players.") # Ενημέρωση για τον server
     await asyncio.gather(
         handle_control(),       # Επεξεργασία αιτημάτων σύνδεσης/αποσύνδεσης
         handle_inputs(),        # Επεξεργασία των κινήσεων των παικτών
