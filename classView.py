@@ -1,5 +1,6 @@
 import arcade
 import random
+from db_game import create_player
 
 class ClassSelectView(arcade.View):
     def __init__(self):
@@ -175,6 +176,12 @@ class ClassSelectView(arcade.View):
                 self.window.class_name = self.classes[i]["name"]
 
                 print("Class selected:", self.window.class_name)
+
+                create_player(
+                    player_id=self.window.player_id,
+                    nickname=self.window.nickname,
+                    class_name=self.window.class_name
+                )
 
                 # game start
                 start_game = getattr(self.window, "start_game", None)

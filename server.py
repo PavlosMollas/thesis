@@ -47,6 +47,7 @@ control_socket.bind("tcp://*:5557") # Ακούμε για αιτήματα σύ�
 
 # Player data: Λεξικό που περιέχει τα δεδομένα των παικτών
 players = {}          # pid → {x, y} (πληροφορίες για την θέση κάθε παίκτη)
+nicknames = {}        # Ψευδώνυμα παικτών
 
 connected = set()     # Σύνολο παικτών σε σειρά σύνδεσης
 
@@ -80,6 +81,9 @@ async def handle_control():
         typ = msg["type"]   # Τύπος αιτήματος (σύνδεση ή αποσύνδεση)
 
         if typ == "connect":
+            nickname = msg.get("nickname") or pid
+            nicknames[pid] = nickname
+
             if pid in connected:
                 await control_socket.send_json({"status": "ok"})
                 continue
@@ -94,7 +98,7 @@ async def handle_control():
             x, y = spawn_points[spawn_index % len(spawn_points)]
             players[pid] = {"x": x, "y": y} # Αποθήκευση θέσης παίκτη
 
-            print(f"Player {pid} CONNECTED at spawn {spawn_index}")
+            print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
 
             await control_socket.send_json({
                 "status": "ok",
@@ -102,7 +106,8 @@ async def handle_control():
 
         # Αποσύνδεση παίκτη
         elif typ == "disconnect":
-            print(f"Player {pid} DISCONNECTED")
+            print(f"Player {nicknames.get(pid, pid)} DISCONNECTED")
+            nicknames.pop(pid, None)
 
             if pid in connected:
                 connected.remove(pid)   # Αφαίρεση του παίκτη από την λίστα των συνδεδεμένων

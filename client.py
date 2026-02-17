@@ -15,6 +15,7 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 CLIENT_PLAYER_ID = None     # Player id
+CLIENT_NICKNAME = None      # Player nickname
 
 # Ρυθμίσεις Sprite sheet 
 FRAME_W = 64    # Πλάτος frame στο sprite sheet
@@ -78,7 +79,8 @@ async def control_loop():
     # Σύνδεση
     await control_socket.send_json({
         "type": "connect",
-        "id": CLIENT_PLAYER_ID
+        "id": CLIENT_PLAYER_ID,
+        "nickname": CLIENT_NICKNAME
     })
     reply = await control_socket.recv_json()
     print("[Control reply]:", reply)
@@ -101,7 +103,8 @@ async def control_loop():
     try:
         await control_socket.send_json({
             "type": "disconnect",
-            "id": CLIENT_PLAYER_ID
+            "id": CLIENT_PLAYER_ID,
+            "nickname": CLIENT_NICKNAME
         })
         await control_socket.recv_json()
     except Exception as e:
@@ -173,6 +176,9 @@ def load_player_animations():
 class PlayerSprite(arcade.Sprite):
     def __init__(self, animations):
         super().__init__(scale=SCALE)
+
+        self.hp = 1.0
+        self.energy = 1.0
 
         self.animations = animations
 
@@ -264,7 +270,7 @@ class MyGame(arcade.View):
         
         # Tilemap layers
         self.terrain_list = None
-        self.decor_list = None
+        # self.decor_list = None
         self.wall_list = None
 
         self.world_camera = arcade.Camera2D()   # Κάμερα για τον κόσμο
@@ -352,6 +358,43 @@ class MyGame(arcade.View):
             cam_y + (target_y - cam_y) * lerp
         )
 
+    def draw_status_bars(self, spr: arcade.Sprite):
+        y = spr.top + 15
+        x = spr.center_x
+
+        w = 50
+        hp_h = 7
+        energy_h = 3
+        gap = 0
+
+        hp = max(0.0, min(1.0, getattr(spr, "hp", 1.0)))
+        en = max(0.0, min(1.0, getattr(spr, "energy", 1.0)))
+
+        left = x - w / 2
+
+        # background
+        arcade.draw_lbwh_rectangle_filled(
+            left - 1, y - 1,
+            w + 2, hp_h + 2,
+            arcade.color.BLACK
+        )
+
+        arcade.draw_lbwh_rectangle_filled(
+            left - 1, y - (hp_h + gap) - 1,
+            w + 2, energy_h + 2,
+            arcade.color.BLACK
+        )
+
+        # HP bar
+        arcade.draw_lbwh_rectangle_filled(left, y, w, hp_h, arcade.color.DARK_GREEN)
+        arcade.draw_lbwh_rectangle_filled(left, y, w * hp, hp_h, arcade.color.GREEN)
+
+        # Energy bar
+        y2 = y - (hp_h + gap)
+
+        arcade.draw_lbwh_rectangle_filled(left, y2, w, energy_h, arcade.color.DARK_YELLOW)
+        arcade.draw_lbwh_rectangle_filled(left, y2, w * en, energy_h, arcade.color.YELLOW)
+
     # Μέθοδος για την αρχικοποίηση του View όταν γίνεται ενεργό
     def on_show_view(self):
         # Reset κάμερας
@@ -369,7 +412,7 @@ class MyGame(arcade.View):
         
         # Ανάθεση layers
         self.terrain_list = self.tile_map.sprite_lists["Terrain"]
-        self.decor_list = self.tile_map.sprite_lists["Decor"]
+        # self.decor_list = self.tile_map.sprite_lists["Decor"]
         self.wall_list = self.tile_map.sprite_lists["Walls"]
 
         # Διαστάσεις χάρτη σε pixels
@@ -388,8 +431,8 @@ class MyGame(arcade.View):
         self.actor_list = arcade.SpriteList()
 
         # Προσθήκη decor
-        for d in self.decor_list:
-            self.actor_list.append(d)
+        # for d in self.decor_list:
+        #     self.actor_list.append(d)
 
         # Προσθήκη walls
         for w in self.wall_list:
@@ -419,6 +462,14 @@ class MyGame(arcade.View):
             # Ταξινόμηση αντικειμένων με βάση το Y (για σωστό βάθος)
             self.actor_list.sort(key=self.sort_key)  # Ζωγραφίζουμε όλα τα sprites
             self.actor_list.draw()
+
+            # Μπάρες για local player
+            if self.player_sprite:
+                self.draw_status_bars(self.player_sprite)
+
+            # Μπάρες για άλλους παίκτες
+            for spr in self.other_sprites.values():
+                self.draw_status_bars(spr)
 
         self.timer_text.draw()      # Ζωγραφίζουμε το timer
 
@@ -624,7 +675,7 @@ def main():
 
     # Μέθοδος που καλείται όταν ο χρήστης ξεκινά το παιχνίδι
     def start_game():
-        global SERVER_ACCEPTED, CLIENT_PLAYER_ID        # Χρησιμοποιούμε global για το player id και την απάντηση του server
+        global SERVER_ACCEPTED, CLIENT_PLAYER_ID, CLIENT_NICKNAME        # Χρησιμοποιούμε global για το player id, το nickname και την απάντηση του server
 
         # Αν ο χρήστης ξεκινά νέο παιχνίδι
         if window.game_mode == "NEW_GAME":
@@ -634,8 +685,9 @@ def main():
                 window.show_view(CreatePlayerView())
                 return
 
-        # Παίρνουμε το player id που δημιουργήθηκε στο menu / character creation
+        # Παίρνουμε το player id και το nickname που δημιουργήθηκε στο menu / character creation
         CLIENT_PLAYER_ID = window.player_id
+        CLIENT_NICKNAME = window.nickname
 
         # Έλεγχος ώστε το networking thread να ξεκινήσει μία φορά
         if not window.network_started:

@@ -161,13 +161,13 @@ class MenuView(arcade.View):
             self.last_selected = self.selected
         
         title_alpha = int(128 + 127 * math.sin(self.pulseTimer * 1.0))  # Εφέ παλμού
-        self.title_text.color = (100, 150, 255, title_alpha)  # Μπλε χρώμα παλμού για την επικεφαλίδα
+        self.title_text.color = (0, 0, 0, title_alpha)  # Μπλε χρώμα παλμού για την επικεφαλίδα
 
         alpha = int(128 + 127 * math.sin(self.pulseTimer * 4.0))  # Εφέ παλμού
 
         for i, text in enumerate(self.menu_texts):      # Για κάθε επιλογή στη λίστα μενού
             if i == self.selected:                      # Αν το στοιχείο είναι επιλεγμένο
-                text.color = (255, 255, 0, alpha)       # Αναβοσβήνει σε κίτρινο χρώμα
+                text.color = (255, 140, 0, alpha)       # Αναβοσβήνει σε κίτρινο χρώμα
             else:
                 text.color = arcade.color.WHITE         # Αλλιώς μένει άσπρο 
 
@@ -220,9 +220,15 @@ class MenuView(arcade.View):
             arcade.stop_sound(self.menu_music_player)
             self.menu_music_player = None
 
-        # Αν υπάρχει και είναι callable, ξεκινά το παιχνίδι
-        if callable(start_game):
-            start_game()
+        if self.window.game_mode == "NEW_GAME":
+            start_game = getattr(self.window, "start_game", None)
+
+            # Αν υπάρχει και είναι callable, ξεκινά το παιχνίδι
+            if callable(start_game):
+                start_game()
+            else:
+                # Αν δεν υπάρχει το start_game τερματίζει το πρόγραμμα
+                arcade.exit()
         else:
-            # Αν δεν υπάρχει το start_game τερματίζει το πρόγραμμα
-            arcade.exit()
+            from returningPlayerView import ReturningPlayerView
+            self.window.show_view(ReturningPlayerView())
