@@ -8,7 +8,11 @@ import sys
 import time
 from login import MenuView
 from playerView import CreatePlayerView
-from classView import ClassSelectView
+from enemies import (
+    load_enemy_animations, EnemySprite,
+    IDLE, WALK, ATTACK, HURT, DEATH,
+    DOWN, UP, LEFT, RIGHT
+)
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
@@ -57,7 +61,7 @@ sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 control_socket = ctx.socket(zmq.REQ)
 control_socket.connect("tcp://127.0.0.1:5557")
 
-# Ασύγχρονες μέθοδοι για το δίκτυο
+### Ασύγχρονες μέθοδοι για το δίκτυο ###
 
 # Στέλνει input κίνησης στον server.
 async def send_move(direction: str):
@@ -193,6 +197,26 @@ class PlayerSprite(arcade.Sprite):
         # Αρχικό texture
         self.texture = self.animations[self.state][self.direction][0]
 
+        # Text για το nickname
+        self.nickname_text = arcade.Text(
+            "",
+            0, 0,
+            arcade.color.WHITE,
+            font_size=12,
+            anchor_x="center",
+            anchor_y="bottom"
+        )
+
+        # Text για το level
+        self.level_text = arcade.Text(
+            "",
+            0, 0,
+            arcade.color.RED,
+            font_size=12,
+            anchor_x="right",
+            anchor_y="center"
+        )
+
     # Αλλάζει animation state / direction
     # Κάνει reset animation μόνο όταν αλλάζει state
     def set_state(self, state, direction=None):
@@ -267,6 +291,9 @@ class MyGame(arcade.View):
         self.held_keys = set()    # Set που κρατάει ποια πλήκτρα είναι πατημένα (για hold keys)
 
         self.actor_list = arcade.SpriteList()   # Λίστα με τα sprites που σχεδιάζονται
+
+        self.enemy_list = arcade.SpriteList()
+        self.enemy_animations = None
         
         # Tilemap layers
         self.terrain_list = None
@@ -280,7 +307,8 @@ class MyGame(arcade.View):
         self.player_animations = None   # Animations του local player
         self.player_sprite = None       # Sprite του τοπικού παίκτη
 
-        self.other_sprites = {}         # Άλλοι παίκτες
+        self.other_sprites = {}         # Dict για τους άλλους παίκτες
+        self.enemy_sprites = {}         # Dict για εχθρούς
         
         # Μεταβλητές για smoothing στην κίνηση
         self.position_buffers = {}      # Λεξικό που κρατά για κάθε παίκτη τις δύο πιο πρόσφατες θέσεις του με server tick για εξομάλυνση κίνησης
@@ -359,39 +387,44 @@ class MyGame(arcade.View):
         )
 
     def draw_status_bars(self, spr: arcade.Sprite):
-        y = spr.top + 15
+        # θέση πάνω από το κεφάλι
         x = spr.center_x
+        y = spr.top + 18
 
-        w = 50
+        # διαστάσεις
+        w = 54
         hp_h = 7
         energy_h = 3
-        gap = 0
+        gap = 2
 
+        # values 
         hp = max(0.0, min(1.0, getattr(spr, "hp", 1.0)))
         en = max(0.0, min(1.0, getattr(spr, "energy", 1.0)))
 
         left = x - w / 2
 
-        # background
-        arcade.draw_lbwh_rectangle_filled(
-            left - 1, y - 1,
-            w + 2, hp_h + 2,
-            arcade.color.BLACK
-        )
+        # nickname
+        spr.nickname_text.text = getattr(spr, "nickname", "")
+        spr.nickname_text.x = x
+        spr.nickname_text.y = y + hp_h
+        spr.nickname_text.draw()
 
-        arcade.draw_lbwh_rectangle_filled(
-            left - 1, y - (hp_h + gap) - 1,
-            w + 2, energy_h + 2,
-            arcade.color.BLACK
-        )
+        # level
+        spr.level_text.text = str(getattr(spr, "level", 1))
+        spr.level_text.x = left - gap
+        spr.level_text.y = y + hp_h / 2
+        spr.level_text.draw()
 
-        # HP bar
+        # backgrounds
+        arcade.draw_lbwh_rectangle_filled(left - 1, y - 1, w + 2, hp_h + 2, arcade.color.BLACK)
+        arcade.draw_lbwh_rectangle_filled(left - 1, y - (energy_h + gap) - 1, w + 2, energy_h + 2, arcade.color.BLACK)
+
+        # HP
         arcade.draw_lbwh_rectangle_filled(left, y, w, hp_h, arcade.color.DARK_GREEN)
         arcade.draw_lbwh_rectangle_filled(left, y, w * hp, hp_h, arcade.color.GREEN)
 
-        # Energy bar
-        y2 = y - (hp_h + gap)
-
+        # ENERGY
+        y2 = y - (energy_h + gap)
         arcade.draw_lbwh_rectangle_filled(left, y2, w, energy_h, arcade.color.DARK_YELLOW)
         arcade.draw_lbwh_rectangle_filled(left, y2, w * en, energy_h, arcade.color.YELLOW)
 
@@ -427,6 +460,14 @@ class MyGame(arcade.View):
         if self.player_sprite is None:
             self.player_sprite = PlayerSprite(self.player_animations)
 
+            # Βάζει το nickname από το login
+            self.player_sprite.nickname = getattr(self.window, "nickname", "Player")
+
+            # Προσωρινά stats
+            self.player_sprite.hp = 1.0
+            self.player_sprite.energy = 1.0
+            self.player_sprite.level = getattr(self.window, "level", 1)
+
         # Δημιουργία του actor_list κάθε φορά που μπαίνουμε στο view
         self.actor_list = arcade.SpriteList()
 
@@ -440,6 +481,9 @@ class MyGame(arcade.View):
 
         # Προσθήκη player
         self.actor_list.append(self.player_sprite)
+
+        if not hasattr(self, "enemy_animations") or self.enemy_animations is None:
+            self.enemy_animations = load_enemy_animations()
 
         # Τοποθέτηση timer στο UI
         self.timer_text.x = 10
@@ -469,7 +513,8 @@ class MyGame(arcade.View):
 
             # Μπάρες για άλλους παίκτες
             for spr in self.other_sprites.values():
-                self.draw_status_bars(spr)
+                if isinstance(spr, PlayerSprite):
+                    self.draw_status_bars(spr)
 
         self.timer_text.draw()      # Ζωγραφίζουμε το timer
 
@@ -502,6 +547,8 @@ class MyGame(arcade.View):
 
         # Κατάσταση όλων των παικτών από τον server
         players_state = latest_state.get("players", {})
+        enemies_state = latest_state.get("enemies", {})
+
 
         # Ενημέρωση του timer σε μορφή mm:ss
         minutes = int(self.elapsed_time) // 60
@@ -512,6 +559,10 @@ class MyGame(arcade.View):
         for pid, pos in players_state.items():
             x = pos["x"]
             y = pos["y"]
+            nickname = pos.get("nickname", pid)
+            level = pos.get("level", 1)
+            hp = pos.get("hp", 1.0)
+            energy = pos.get("energy", 1.0)
 
             # Αν είναι ο τοπικός παίκτης, χρησιμοποιούμε το main sprite
             if pid == CLIENT_PLAYER_ID:
@@ -523,6 +574,12 @@ class MyGame(arcade.View):
                     self.other_sprites[pid] = spr
                     self.actor_list.append(spr)
                 sprite = self.other_sprites[pid]
+
+            # ενημέρωση UI fields
+            sprite.nickname = nickname
+            sprite.level = level
+            sprite.hp = hp
+            sprite.energy = energy
 
             # Buffer θέσεων: κρατάμε τις 2 πιο πρόσφατες θέσεις από τον server
             buf = self.position_buffers.setdefault(pid, [])
@@ -547,6 +604,48 @@ class MyGame(arcade.View):
                 self.position_buffers.pop(pid, None)
                 self.snapshots.pop(pid, None)
                 self.interp_t.pop(pid, None)
+
+        for eid, epos in enemies_state.items():
+            ex = epos["x"]; ey = epos["y"]
+            estate = epos.get("state", IDLE)
+            edir = epos.get("dir", DOWN)
+            hp = epos.get("hp", 1.0)
+            energy = epos.get("energy", 1.0)
+            lvl = epos.get("level", 1)
+            dead = epos.get("dead", False)
+
+            # create if missing
+            if eid not in self.enemy_sprites:
+                if self.enemy_animations is None:
+                    self.enemy_animations = load_enemy_animations()
+
+                espr = EnemySprite(self.enemy_animations, scale=2.0)
+                espr.nickname = eid   # πχ "orc1"
+                self.enemy_sprites[eid] = espr
+                self.enemy_list.append(espr)
+                self.actor_list.append(espr)   # για depth sort μαζί με όλους
+
+            espr = self.enemy_sprites[eid]
+
+            # update fields
+            espr.center_x = ex
+            espr.center_y = ey
+            espr.hp = hp
+            espr.energy = energy
+            espr.level = lvl
+
+            # state/dir (αν έχεις strings ίδιο format με constants)
+            espr.set_state(estate, edir)
+
+            # remove if dead (server-authoritative)
+            if dead:
+                espr.dead = True
+        
+        existing_eids = set(enemies_state.keys())
+        for eid in list(self.enemy_sprites.keys()):
+            if eid not in existing_eids:
+                spr = self.enemy_sprites.pop(eid)
+                spr.remove_from_sprite_lists()
 
     # Μέθοδος που κάνει interpolation και extrapolation ώστε η κίνηση των παικτών να φαίνεται ομαλή
     def apply_smoothing(self, delta_time):
@@ -654,12 +753,21 @@ class MyGame(arcade.View):
         # Ενημέρωση animation άλλων παικτών
         for spr in self.other_sprites.values():
             spr.update_animation(delta_time)
+
+        for e in list(self.enemy_list):
+            e.update_animation(delta_time)
+            if getattr(e, "dead", False):
+                e.remove_from_sprite_lists()
             
         # Ενημέρωση κάμερας
         self.update_camera()
 
     def on_key_press(self, key, modifiers):
         self.held_keys.add(key)     
+
+        if key == arcade.key.K:  # kill test
+            for e in self.enemy_list:
+                e.set_state(DEATH)
 
     def on_key_release(self, key, modifiers):
         if key in self.held_keys:

@@ -47,11 +47,12 @@ control_socket.bind("tcp://*:5557") # Ακούμε για αιτήματα σύ�
 
 # Player data: Λεξικό που περιέχει τα δεδομένα των παικτών
 players = {}          # pid → {x, y} (πληροφορίες για την θέση κάθε παίκτη)
-nicknames = {}        # Ψευδώνυμα παικτών
+enemies = {}
 
 connected = set()     # Σύνολο παικτών σε σειρά σύνδεσης
 
 spawn_points = []     # Λίστα για το spawn παικτών
+enemy_spawns = []     # Λίστα για το spawn εχθρών
 next_spawn_index = 0
 
 object_layer = tile_map.object_lists.get("Object")  # Παίρνουμε το object layer για το spawn 
@@ -63,11 +64,31 @@ for obj in object_layer:
     if obj.name == "player_spawn":  # Για κάθε object με το όνομα player_spawn (έτσι έχει ονομαστεί στο tiled), προσθέτουμε το σημείο στη λίστα
         x, y = obj.shape
         spawn_points.append((x, y))
+    
+    elif obj.name and obj.name.startswith("orc"):
+        # π.χ. orc1, orc2...
+        x, y = obj.shape
+        enemy_spawns.append((obj.name, x, y))
 
 if not spawn_points:
     raise RuntimeError("No player_spawn objects found in Object layer")
 
 print("Spawn points loaded from TMX:", spawn_points)
+print("Enemy spawns:", enemy_spawns)
+
+# init enemies from tiled spawns
+for (name, x, y) in enemy_spawns:
+    enemies[name] = {
+        "x": x,
+        "y": y,
+        "type": "orc1",     # για να ξέρει ο client τι animations να φορτώσει
+        "state": "idle",
+        "dir": "down",
+        "hp": 1.0,
+        "energy": 1.0,
+        "level": 3,
+        "dead": False,
+    }
 
 TICK_DT = 0.02      # Η διάρκεια κάθε "tick" σε δευτερόλεπτα (ρυθμίζει το frame rate)
 tick = 0            # Μετρητής "tick" για το παιχνίδι
@@ -82,7 +103,6 @@ async def handle_control():
 
         if typ == "connect":
             nickname = msg.get("nickname") or pid
-            nicknames[pid] = nickname
 
             if pid in connected:
                 await control_socket.send_json({"status": "ok"})
@@ -96,7 +116,16 @@ async def handle_control():
             next_spawn_index += 1
 
             x, y = spawn_points[spawn_index % len(spawn_points)]
-            players[pid] = {"x": x, "y": y} # Αποθήκευση θέσης παίκτη
+
+            # Πληροφορίες παίκτη
+            players[pid] = {
+                "x": x,         # Θέση
+                "y": y, 
+                "nickname": nickname,   # Ψευδώνυμο
+                "level": 1,      
+                "hp": 1.0,       
+                "energy": 1.0,   
+                }   
 
             print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
 
@@ -106,13 +135,11 @@ async def handle_control():
 
         # Αποσύνδεση παίκτη
         elif typ == "disconnect":
-            print(f"Player {nicknames.get(pid, pid)} DISCONNECTED")
-            nicknames.pop(pid, None)
+            name = players.get(pid, {}).get("nickname", pid)
+            print(f"Player {name} DISCONNECTED")
 
-            if pid in connected:
-                connected.remove(pid)   # Αφαίρεση του παίκτη από την λίστα των συνδεδεμένων
-            if pid in players:
-                del players[pid]        # Αφαίρεση του παίκτη από τα δεδομένα
+            connected.discard(pid)
+            players.pop(pid, None)
 
             await control_socket.send_json({"status": "ok"})
 
@@ -188,6 +215,7 @@ async def broadcast_state():
             "tick": tick,
             "tick_dt": TICK_DT,             # Διάρκεια κάθε "tick"
             "players": dict(players),             # Κατάσταση των παικτών
+            "enemies": dict(enemies),
             "elapsed_time": elapsed_time    # Χρόνος που έχει περάσει από την έναρξη
         })
 
