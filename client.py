@@ -10,7 +10,7 @@ from login import MenuView
 from playerView import CreatePlayerView
 from enemies import (
     load_enemy_animations, EnemySprite,
-    IDLE, WALK, ATTACK, HURT, DEATH,
+    IDLE, WALK, ATTACK, HURT, DEATH, WALK_ATTACK,
     DOWN, UP, LEFT, RIGHT
 )
 
@@ -25,16 +25,6 @@ CLIENT_NICKNAME = None      # Player nickname
 FRAME_W = 64    # Πλάτος frame στο sprite sheet
 FRAME_H = 64    # Ύψος frame στο sprite sheet
 SCALE = 2       # Κλίμακα sprite στο παιχνίδι
-
-# Κατευθύνσεις για τα animation
-DOWN  = "down"
-LEFT  = "left"
-RIGHT = "right"
-UP    = "up"
-
-# Κατάσταση Animation
-IDLE = "idle"
-WALK = "walk"
 
 # Queue για μεταφορά game state από networking thread προς το main (Arcade) thread
 state_queue = Queue()
@@ -89,13 +79,6 @@ async def control_loop():
     reply = await control_socket.recv_json()
     print("[Control reply]:", reply)
 
-    # # Server full? Δεν έχουμε Player cap οποτε δεν χρησιμοποιείται για τώρα
-    # if reply.get("status") == "full":
-    #     SERVER_ACCEPTED = False
-    #     CONTROL_ACTIVE = False
-    #     DISCONNECT_SENT = True   # δεν θα γίνει DISCONNECT, είμαστε ήδη εκτός
-    #     return
-
     # Επιτυχής σύνδεση (πάντα)
     SERVER_ACCEPTED = True
 
@@ -144,16 +127,47 @@ def thread_worker():
 def load_player_animations():
     idle_sheet = arcade.SpriteSheet("assets/classes/idle.png")  # Φόρτωση idle sprite sheet
     walk_sheet = arcade.SpriteSheet("assets/classes/walk.png")  # Φόρτωση walk sprite sheet
+    hurt_sheet   = arcade.SpriteSheet("assets/classes/hurt.png")
+    attack_sheet = arcade.SpriteSheet("assets/classes/attack.png")
+    death_sheet  = arcade.SpriteSheet("assets/classes/death.png")
+    walk_attack_sheet = arcade.SpriteSheet("assets/classes/walk_attack.png")
 
     # Παίρνουμε τα συνολικά frames για το idle animation
     idle_textures = idle_sheet.get_texture_grid(
         size=(FRAME_W, FRAME_H),
         columns=12,
-        count=48
+        count=40
     )
 
     # Παίρνουμε τα συνολικά frames για το walk animation
     walk_textures = walk_sheet.get_texture_grid(
+        size=(FRAME_W, FRAME_H),
+        columns=6,
+        count=24
+    )
+
+    # Παίρνουμε τα συνολικά frames για το hurt animation
+    hurt_textures = hurt_sheet.get_texture_grid(
+        size=(FRAME_W, FRAME_H),
+        columns=5,
+        count=20
+    )
+
+    # Παίρνουμε τα συνολικά frames για το attack animation
+    attack_textures = attack_sheet.get_texture_grid(
+        size=(FRAME_W, FRAME_H),
+        columns=8,
+        count=32
+    )
+
+    # Παίρνουμε τα συνολικά frames για το death animation
+    death_textures = death_sheet.get_texture_grid(
+        size=(FRAME_W, FRAME_H),
+        columns=7,
+        count=28
+    )
+
+    walk_attack_textures = walk_attack_sheet.get_texture_grid(
         size=(FRAME_W, FRAME_H),
         columns=6,
         count=24
@@ -172,6 +186,30 @@ def load_player_animations():
             LEFT:  walk_textures[6:12],
             RIGHT: walk_textures[12:18],
             UP:    walk_textures[18:24],
+        },
+        HURT: {
+            DOWN:  hurt_textures[0:5],
+            LEFT:  hurt_textures[5:10],
+            RIGHT: hurt_textures[10:15],
+            UP:    hurt_textures[15:20],
+        },
+        ATTACK: {
+            DOWN:  attack_textures[0:8],
+            LEFT:  attack_textures[8:16],
+            RIGHT: attack_textures[16:24],
+            UP:    attack_textures[24:32],
+        },
+        DEATH: {
+            DOWN:  death_textures[0:7],
+            LEFT:  death_textures[7:14],
+            RIGHT: death_textures[14:21],
+            UP:    death_textures[21:28],
+        },
+        WALK_ATTACK: {
+            DOWN:  walk_attack_textures[0:6],
+            LEFT:  walk_attack_textures[6:12],
+            RIGHT: walk_attack_textures[12:18],
+            UP:    walk_attack_textures[18:24],
         }
     }
 
@@ -180,6 +218,9 @@ def load_player_animations():
 class PlayerSprite(arcade.Sprite):
     def __init__(self, animations):
         super().__init__(scale=SCALE)
+
+        self.attack_finished = False
+        self.attack_dir = None
 
         self.hp = 1.0
         self.energy = 1.0
@@ -222,6 +263,7 @@ class PlayerSprite(arcade.Sprite):
     def set_state(self, state, direction=None):
         if direction:
             self.direction = direction  # Ενημερώνουμε την τρέχουσα κατεύθυνση του sprite
+            self.last_direction = direction
 
         # Ελέγχουμε αν αλλάζει η κατάσταση του animation
         if state != self.state:
@@ -237,10 +279,29 @@ class PlayerSprite(arcade.Sprite):
         frames = self.animations[self.state][self.direction]    # Παίρνουμε τη λίστα των frames για το τρέχον state και την τρέχουσα κατεύθυνση
         self.time_acc += delta_time     # Προσθέτουμε τον χρόνο που πέρασε από το προηγούμενο frame
 
+        # Τrue μόνο για 1 frame όταν τελειώσει attack
+        self.attack_finished = False
+
         # Αν έχει περάσει αρκετός χρόνος ώστε να αλλάξει frame το animation
         if self.time_acc >= self.frame_time:
             self.time_acc = 0.0         # Μηδενίζουμε τη μεταβλητή για να ξεκινήσει νέα μέτρηση χρόνου
-            self.cur_frame = (self.cur_frame + 1) % len(frames)     # Προχωράμε στο επόμενο frame του animation, το modulo εξασφαλίζει ότι όταν φτάσουμε στο τελευταίο frame, θα επιστρέψουμε στο πρώτο
+
+            if self.state == DEATH:
+
+                # Στο death animation δεν γίνεται loop
+                if self.cur_frame < len(frames) - 1:
+                    self.cur_frame += 1
+
+            elif self.state in (ATTACK, WALK_ATTACK):
+                # ATTACK: δεν κάνει loop, και όταν τελειώσει γυρνάει σε IDLE
+                if self.cur_frame < len(frames) - 1:
+                    self.cur_frame += 1
+                else:
+                    self.attack_finished = True
+                    return  # μην συνεχίσεις να γράφεις texture από τα παλιά frames
+            
+            else:
+                self.cur_frame = (self.cur_frame + 1) % len(frames)     # Προχωράμε στο επόμενο frame του animation, το modulo εξασφαλίζει ότι όταν φτάσουμε στο τελευταίο frame, θα επιστρέψουμε στο πρώτο
             self.texture = frames[self.cur_frame]        # Ενημερώνουμε το texture του sprite με το νέο frame του animation
 
 # Main Window
@@ -289,15 +350,21 @@ class MyGame(arcade.View):
         super().__init__()
 
         self.held_keys = set()    # Set που κρατάει ποια πλήκτρα είναι πατημένα (για hold keys)
+        # Movement μόνο (WASD): last pressed wins
+        self.held_move = set()     # πατημένα WASD
+        self.move_order = []       # σειρά πατημάτων WASD (τελευταίο στο τέλος)
+        self.last_sent_move = None # για να μη στέλνουμε συνέχεια το ίδιο
 
-        self.actor_list = arcade.SpriteList()   # Λίστα με τα sprites που σχεδιάζονται
+        self.actor_list = arcade.SpriteList()   # Λίστα με όλα τα sprites που σχεδιάζονται
 
-        self.enemy_list = arcade.SpriteList()
+        self.enemy_list = arcade.SpriteList()   # Λίστα με τα sprites των εχθρών
         self.enemy_animations = None
+
+        self.attack_buffered = False
+        self.attack_buffer_threshold = 0.70  # τελευταίο 30% του attack επιτρέπει buffer
         
         # Tilemap layers
         self.terrain_list = None
-        # self.decor_list = None
         self.wall_list = None
 
         self.world_camera = arcade.Camera2D()   # Κάμερα για τον κόσμο
@@ -445,7 +512,6 @@ class MyGame(arcade.View):
         
         # Ανάθεση layers
         self.terrain_list = self.tile_map.sprite_lists["Terrain"]
-        # self.decor_list = self.tile_map.sprite_lists["Decor"]
         self.wall_list = self.tile_map.sprite_lists["Walls"]
 
         # Διαστάσεις χάρτη σε pixels
@@ -471,10 +537,6 @@ class MyGame(arcade.View):
         # Δημιουργία του actor_list κάθε φορά που μπαίνουμε στο view
         self.actor_list = arcade.SpriteList()
 
-        # Προσθήκη decor
-        # for d in self.decor_list:
-        #     self.actor_list.append(d)
-
         # Προσθήκη walls
         for w in self.wall_list:
             self.actor_list.append(w)
@@ -489,11 +551,20 @@ class MyGame(arcade.View):
         self.timer_text.x = 10
         self.timer_text.y = self.window.height - 30
 
+        self.attack_buffered = False
+
         self.held_keys.clear()  # Καθαρισμός input
+        self.held_move.clear()
+        self.move_order.clear()
+        self.last_sent_move = None
 
     # Καθαρίζουμε τα πατημένα πλήκτρα όταν φεύγουμε από το view
     def on_hide_view(self):
+        self.attack_buffered = False
         self.held_keys.clear()
+        self.held_move.clear()
+        self.move_order.clear()
+        self.last_sent_move = None
 
     # Ζωγραφίζουμε τα αντικείμενα
     def on_draw(self):
@@ -715,6 +786,15 @@ class MyGame(arcade.View):
             move_dy = y1 - y0
             moving = abs(move_dx) > 0.01 or abs(move_dy) > 0.01
 
+            # --- IMPORTANT: Μην overwrit-άρεις combat states του local player ---
+            if pid == CLIENT_PLAYER_ID and sprite.state in (ATTACK, HURT, DEATH, WALK_ATTACK):
+                # προαιρετικά: μπορείς να ενημερώνεις last_direction από την κίνηση, αλλά όχι state
+                locked = getattr(sprite, "attack_dir", None)
+                if locked is not None:
+                    sprite.direction = locked
+                    sprite.last_direction = locked
+                continue  # ή continue (αν είσαι μέσα σε loop)
+
             # Ορισμός animation και κατεύθυνσης
             if moving:
                 if abs(move_dx) > abs(move_dy):
@@ -735,20 +815,71 @@ class MyGame(arcade.View):
         # Εφαρμογή smoothing στην κίνηση
         self.apply_smoothing(delta_time)
 
-        # Αποστολή input στον server
-        if NETWORK_LOOP is not None:
-            if arcade.key.UP in self.held_keys:
-                asyncio.run_coroutine_threadsafe(send_move("UP"), NETWORK_LOOP)
-            if arcade.key.DOWN in self.held_keys:
-                asyncio.run_coroutine_threadsafe(send_move("DOWN"), NETWORK_LOOP)
-            if arcade.key.LEFT in self.held_keys:
-                asyncio.run_coroutine_threadsafe(send_move("LEFT"), NETWORK_LOOP)
-            if arcade.key.RIGHT in self.held_keys:
-                asyncio.run_coroutine_threadsafe(send_move("RIGHT"), NETWORK_LOOP)
+        # Αποστολή movement input στον server (μόνο 1 κατεύθυνση: last pressed wins)
+        if NETWORK_LOOP is not None and self.player_sprite:
+            s = self.player_sprite.state
+
+            if s in (ATTACK, HURT, DEATH):
+                # attack στάσιμο -> STOP
+                move_dir = None
+
+            elif s == WALK_ATTACK:
+                # walk_attack -> κίνηση ΜΟΝΟ μπροστά (locked)
+                move_dir = self.dir_to_move_str(self.player_sprite.attack_dir)
+
+            else:
+                move_dir = None
+
+                # διάλεξε το τελευταίο πατημένο WASD που είναι ακόμα πατημένο
+                for k in reversed(self.move_order):
+                    if k in self.held_move:
+                        if k == arcade.key.W:
+                            move_dir = "UP"
+                        elif k == arcade.key.S:
+                            move_dir = "DOWN"
+                        elif k == arcade.key.A:
+                            move_dir = "LEFT"
+                        elif k == arcade.key.D:
+                            move_dir = "RIGHT"
+                        break
+
+            # στείλε μόνο αν άλλαξε (για να μη spamάρεις)
+            # αν δεν υπάρχει κίνηση -> στείλε STOP (1 φορά)
+            if move_dir is None:
+                if self.last_sent_move is not None:
+                    self.last_sent_move = None
+                    asyncio.run_coroutine_threadsafe(send_move("STOP"), NETWORK_LOOP)
+            else:
+                if move_dir != self.last_sent_move:
+                    self.last_sent_move = move_dir
+                    asyncio.run_coroutine_threadsafe(send_move(move_dir), NETWORK_LOOP)
 
         # Ενημέρωση animation τοπικού παίκτη
         if self.player_sprite:
             self.player_sprite.update_animation(delta_time)
+
+            # --- Consume attack buffer (Case C) ---
+            if self.player_sprite.attack_finished:
+                self.player_sprite.attack_finished = False
+
+                if self.attack_buffered:
+                    self.attack_buffered = False
+                    next_state = getattr(self, "buffer_attack_state", None) or ATTACK
+                    self.buffer_attack_state = None
+
+                    # ξανα-LOCK με την τρέχουσα last_direction
+                    self.player_sprite.attack_dir = self.player_sprite.last_direction
+                    self.player_sprite.set_state(next_state, self.player_sprite.attack_dir)
+
+                else:
+                    # καθάρισε lock
+                    self.player_sprite.attack_dir = None
+
+                    # επιστροφή σε σωστό locomotion
+                    if self.held_move:
+                        self.player_sprite.set_state(WALK, self.player_sprite.last_direction)
+                    else:
+                        self.player_sprite.set_state(IDLE, self.player_sprite.last_direction)
 
         # Ενημέρωση animation άλλων παικτών
         for spr in self.other_sprites.values():
@@ -762,16 +893,72 @@ class MyGame(arcade.View):
         # Ενημέρωση κάμερας
         self.update_camera()
 
-    def on_key_press(self, key, modifiers):
-        self.held_keys.add(key)     
+    def is_moving_input(self):
+        return len(self.held_move) > 0   # ή self.last_sent_move is not None
 
-        if key == arcade.key.K:  # kill test
-            for e in self.enemy_list:
-                e.set_state(DEATH)
+    def on_key_press(self, key, modifiers):
+        # (Optional) Ignore direction changes while attacking
+        if self.player_sprite and self.player_sprite.state in (ATTACK, WALK_ATTACK):
+            if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
+                return
+        # --- ATTACK (SPACE): Case C (lock + 1 buffer) ---
+        if key == arcade.key.SPACE and self.player_sprite:
+            spr = self.player_sprite
+
+            if spr.state == DEATH:
+                return
+
+            attack_state = WALK_ATTACK if self.is_moving_input() else ATTACK
+
+            # Αν ήδη κάνει attack -> buffer μόνο κοντά στο τέλος
+            if spr.state in (ATTACK, WALK_ATTACK):
+                frames = spr.animations[spr.state][spr.direction]
+                progress = spr.cur_frame / (len(frames) - 1) if len(frames) > 1 else 1.0
+
+                if progress >= self.attack_buffer_threshold:
+                    self.attack_buffered = True
+                    self.buffer_attack_state = attack_state
+                return
+
+            # Ξεκίνα νέο attack τώρα
+            self.attack_buffered = False
+            self.buffer_attack_state = None
+
+            # LOCK direction για ΟΛΟ το attack
+            spr.attack_dir = spr.last_direction
+            spr.set_state(attack_state, spr.attack_dir)
+            return
+
+    # Movement keys (μόνο WASD) - last pressed wins
+        if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
+            self.held_move.add(key)
+
+            # κάνε το key "τελευταίο" στη σειρά
+            if key in self.move_order:
+                self.move_order.remove(key)
+            self.move_order.append(key)
+            return
+
+        # Όλα τα άλλα keys (spells κλπ) επιτρέπονται ταυτόχρονα
+        self.held_keys.add(key)
 
     def on_key_release(self, key, modifiers):
-        if key in self.held_keys:
-            self.held_keys.remove(key)
+        # Movement keys (μόνο WASD)
+        if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
+            self.held_move.discard(key)
+            if key in self.move_order:
+                self.move_order.remove(key)
+            return
+
+        # Άλλα keys (spells κλπ)
+        self.held_keys.discard(key)
+
+    def dir_to_move_str(self, d):
+        if d == UP: return "UP"
+        if d == DOWN: return "DOWN"
+        if d == LEFT: return "LEFT"
+        if d == RIGHT: return "RIGHT"
+        return None
 
 def main():
     # Χρησιμοποιούμε global μεταβλητές που ελέγχουν αν ο server δέχτηκε τον client και αν στάλθηκε DISCONNECT

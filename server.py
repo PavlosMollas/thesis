@@ -125,6 +125,7 @@ async def handle_control():
                 "level": 1,      
                 "hp": 1.0,       
                 "energy": 1.0,   
+                "move_dir": "STOP",
                 }   
 
             print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
@@ -169,38 +170,16 @@ async def handle_inputs():
     while True:
         msg = await pull_socket.recv_json() # Λαμβάνει τα μηνύματα κίνησης από τους πελάτες
         pid = msg["id"]
-        direction = msg["move"]
+        direction = msg.get("move", "STOP")
 
         # Αγνοεί τις κινήσεις από παίκτες που δεν είναι συνδεδεμένοι
         if pid not in players:
             continue
 
-        p = players[pid]    # Παίκτης που στέλνει την κίνηση
+        if direction not in ("UP", "DOWN", "LEFT", "RIGHT", "STOP"):
+            direction = "STOP"
 
-        # Κίνηση του παίκτη με βάση την εισερχόμενη εντολή
-        new_x = p["x"]
-        new_y = p["y"]
-
-        # Εφαρμογή κίνησης με βάση την εντολή που έστειλε ο client
-        if direction == "UP":
-            new_y += SPEED
-        elif direction == "DOWN":
-            new_y -= SPEED
-        elif direction == "LEFT":
-            new_x -= SPEED
-        elif direction == "RIGHT":
-            new_x += SPEED
-
-        # Περιορισμός της νέας θέσης ώστε ο παίκτης να μην βγει εκτός των ορίων του χάρτη
-        new_x = max(PLAYER_WIDTH / 2, min(new_x, MAP_WIDTH - PLAYER_WIDTH / 2))
-        new_y = max(PLAYER_HEIGHT / 2, min(new_y, MAP_HEIGHT - PLAYER_HEIGHT / 2))
-
-        # Έλεγχος collision
-        if not collides_with_walls(new_x, p["y"]):
-            p["x"] = new_x
-
-        if not collides_with_walls(p["x"], new_y):
-            p["y"] = new_y        
+        players[pid]["move_dir"] = direction       
 
 # Μέθοδος για τη μετάδοση κατάστασης παιχνιδιού
 async def broadcast_state():
@@ -209,6 +188,34 @@ async def broadcast_state():
         tick += 1       # Αύξηση του tick για κάθε frame
 
         elapsed_time = time.time() - server_start_time
+
+        for pid, p in players.items():
+            direction = p.get("move_dir", "STOP")
+
+            # Κίνηση του παίκτη με βάση την εισερχόμενη εντολή
+            new_x = p["x"]
+            new_y = p["y"]
+
+            # Εφαρμογή κίνησης με βάση την εντολή που έστειλε ο client
+            if direction == "UP":
+                new_y += SPEED
+            elif direction == "DOWN":
+                new_y -= SPEED
+            elif direction == "LEFT":
+                new_x -= SPEED
+            elif direction == "RIGHT":
+                new_x += SPEED
+
+            # Περιορισμός της νέας θέσης ώστε ο παίκτης να μην βγει εκτός των ορίων του χάρτη
+            new_x = max(PLAYER_WIDTH / 2, min(new_x, MAP_WIDTH - PLAYER_WIDTH / 2))
+            new_y = max(PLAYER_HEIGHT / 2, min(new_y, MAP_HEIGHT - PLAYER_HEIGHT / 2))
+
+            # Έλεγχος collision
+            if not collides_with_walls(new_x, p["y"]):
+                p["x"] = new_x
+
+            if not collides_with_walls(p["x"], new_y):
+                p["y"] = new_y
 
         # Στέλνει την κατάσταση του παιχνιδιού σε όλους τους πελάτες
         await pub_socket.send_json({
