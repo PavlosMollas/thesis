@@ -6,10 +6,11 @@ import zmq.asyncio
 from queue import Queue
 import sys
 import time
+from classView import ClassSelectView
 from login import MenuView
 from playerView import CreatePlayerView
-from enemies import (
-    load_enemy_animations, EnemySprite,
+from sprites import (
+    load_enemy_animations, load_player_animations, EnemySprite, PlayerSprite,
     IDLE, WALK, ATTACK, HURT, DEATH, WALK_ATTACK,
     DOWN, UP, LEFT, RIGHT
 )
@@ -20,11 +21,6 @@ if sys.platform.startswith("win"):
 
 CLIENT_PLAYER_ID = None     # Player id
 CLIENT_NICKNAME = None      # Player nickname
-
-# Ρυθμίσεις Sprite sheet 
-FRAME_W = 64    # Πλάτος frame στο sprite sheet
-FRAME_H = 64    # Ύψος frame στο sprite sheet
-SCALE = 2       # Κλίμακα sprite στο παιχνίδι
 
 # Queue για μεταφορά game state από networking thread προς το main (Arcade) thread
 state_queue = Queue()
@@ -123,187 +119,6 @@ def thread_worker():
     loop.create_task(io_main())
     loop.run_forever()
 
-# Φορτώνει τα sprite sheets και τα μετατρέπει σε δομή animations[state][direction][frame]
-def load_player_animations():
-    idle_sheet = arcade.SpriteSheet("assets/classes/idle.png")  # Φόρτωση idle sprite sheet
-    walk_sheet = arcade.SpriteSheet("assets/classes/walk.png")  # Φόρτωση walk sprite sheet
-    hurt_sheet   = arcade.SpriteSheet("assets/classes/hurt.png")
-    attack_sheet = arcade.SpriteSheet("assets/classes/attack.png")
-    death_sheet  = arcade.SpriteSheet("assets/classes/death.png")
-    walk_attack_sheet = arcade.SpriteSheet("assets/classes/walk_attack.png")
-
-    # Παίρνουμε τα συνολικά frames για το idle animation
-    idle_textures = idle_sheet.get_texture_grid(
-        size=(FRAME_W, FRAME_H),
-        columns=12,
-        count=40
-    )
-
-    # Παίρνουμε τα συνολικά frames για το walk animation
-    walk_textures = walk_sheet.get_texture_grid(
-        size=(FRAME_W, FRAME_H),
-        columns=6,
-        count=24
-    )
-
-    # Παίρνουμε τα συνολικά frames για το hurt animation
-    hurt_textures = hurt_sheet.get_texture_grid(
-        size=(FRAME_W, FRAME_H),
-        columns=5,
-        count=20
-    )
-
-    # Παίρνουμε τα συνολικά frames για το attack animation
-    attack_textures = attack_sheet.get_texture_grid(
-        size=(FRAME_W, FRAME_H),
-        columns=8,
-        count=32
-    )
-
-    # Παίρνουμε τα συνολικά frames για το death animation
-    death_textures = death_sheet.get_texture_grid(
-        size=(FRAME_W, FRAME_H),
-        columns=7,
-        count=28
-    )
-
-    walk_attack_textures = walk_attack_sheet.get_texture_grid(
-        size=(FRAME_W, FRAME_H),
-        columns=6,
-        count=24
-    )
-
-    # Θέτουμε τα frames στις αντίστοιχες κινήσεις/στάσεις
-    animations = {
-        IDLE: {
-            DOWN:  idle_textures[0:12],
-            LEFT:  idle_textures[12:24],
-            RIGHT: idle_textures[24:36],
-            UP:    idle_textures[36:40],
-        },
-        WALK: {
-            DOWN:  walk_textures[0:6],
-            LEFT:  walk_textures[6:12],
-            RIGHT: walk_textures[12:18],
-            UP:    walk_textures[18:24],
-        },
-        HURT: {
-            DOWN:  hurt_textures[0:5],
-            LEFT:  hurt_textures[5:10],
-            RIGHT: hurt_textures[10:15],
-            UP:    hurt_textures[15:20],
-        },
-        ATTACK: {
-            DOWN:  attack_textures[0:8],
-            LEFT:  attack_textures[8:16],
-            RIGHT: attack_textures[16:24],
-            UP:    attack_textures[24:32],
-        },
-        DEATH: {
-            DOWN:  death_textures[0:7],
-            LEFT:  death_textures[7:14],
-            RIGHT: death_textures[14:21],
-            UP:    death_textures[21:28],
-        },
-        WALK_ATTACK: {
-            DOWN:  walk_attack_textures[0:6],
-            LEFT:  walk_attack_textures[6:12],
-            RIGHT: walk_attack_textures[12:18],
-            UP:    walk_attack_textures[18:24],
-        }
-    }
-
-    return animations   # Παίρνουμε το animation
-
-class PlayerSprite(arcade.Sprite):
-    def __init__(self, animations):
-        super().__init__(scale=SCALE)
-
-        self.attack_finished = False
-        self.attack_dir = None
-
-        self.hp = 1.0
-        self.energy = 1.0
-
-        self.animations = animations
-
-        self.state = IDLE           # Animation state
-        self.direction = DOWN       # Tρέχουσα κατεύθυνση
-        self.last_direction = DOWN  # Tελευταία κατεύθυνση (για idle)
-
-        self.cur_frame = 0          # Index frame animation
-        self.time_acc = 0.0         # Χρόνος για την αλλαγή του frame
-        self.frame_time = 0.12      # Πόσο γρήγορα αλλάζει frame
-
-        # Αρχικό texture
-        self.texture = self.animations[self.state][self.direction][0]
-
-        # Text για το nickname
-        self.nickname_text = arcade.Text(
-            "",
-            0, 0,
-            arcade.color.WHITE,
-            font_size=12,
-            anchor_x="center",
-            anchor_y="bottom"
-        )
-
-        # Text για το level
-        self.level_text = arcade.Text(
-            "",
-            0, 0,
-            arcade.color.RED,
-            font_size=12,
-            anchor_x="right",
-            anchor_y="center"
-        )
-
-    # Αλλάζει animation state / direction
-    # Κάνει reset animation μόνο όταν αλλάζει state
-    def set_state(self, state, direction=None):
-        if direction:
-            self.direction = direction  # Ενημερώνουμε την τρέχουσα κατεύθυνση του sprite
-            self.last_direction = direction
-
-        # Ελέγχουμε αν αλλάζει η κατάσταση του animation
-        if state != self.state:
-            self.state = state  # Αποθηκεύουμε τη νέα κατάστασ
-            self.cur_frame = 0  # Μηδενίζουμε το frame ώστε το animation να ξεκινήσει από το πρώτο frame της νέας κατάστασης
-            self.time_acc = 0.0 # Μηδενίζουμε το χρόνο για να μην συνεχίσει από προηγούμενο state
-            
-        # Ορίζουμε το texture που θα εμφανιστεί στο sprite
-        self.texture = self.animations[self.state][self.direction][self.cur_frame]
-
-    #  Ενημέρωση animation με βάση τον χρόνο
-    def update_animation(self, delta_time):
-        frames = self.animations[self.state][self.direction]    # Παίρνουμε τη λίστα των frames για το τρέχον state και την τρέχουσα κατεύθυνση
-        self.time_acc += delta_time     # Προσθέτουμε τον χρόνο που πέρασε από το προηγούμενο frame
-
-        # Τrue μόνο για 1 frame όταν τελειώσει attack
-        self.attack_finished = False
-
-        # Αν έχει περάσει αρκετός χρόνος ώστε να αλλάξει frame το animation
-        if self.time_acc >= self.frame_time:
-            self.time_acc = 0.0         # Μηδενίζουμε τη μεταβλητή για να ξεκινήσει νέα μέτρηση χρόνου
-
-            if self.state == DEATH:
-
-                # Στο death animation δεν γίνεται loop
-                if self.cur_frame < len(frames) - 1:
-                    self.cur_frame += 1
-
-            elif self.state in (ATTACK, WALK_ATTACK):
-                # ATTACK: δεν κάνει loop, και όταν τελειώσει γυρνάει σε IDLE
-                if self.cur_frame < len(frames) - 1:
-                    self.cur_frame += 1
-                else:
-                    self.attack_finished = True
-                    return  # μην συνεχίσεις να γράφεις texture από τα παλιά frames
-            
-            else:
-                self.cur_frame = (self.cur_frame + 1) % len(frames)     # Προχωράμε στο επόμενο frame του animation, το modulo εξασφαλίζει ότι όταν φτάσουμε στο τελευταίο frame, θα επιστρέψουμε στο πρώτο
-            self.texture = frames[self.cur_frame]        # Ενημερώνουμε το texture του sprite με το νέο frame του animation
-
 # Main Window
 class GameWindow(arcade.Window):
     def on_close(self):
@@ -397,7 +212,7 @@ class MyGame(arcade.View):
             offset = sprite.properties.get("sort_offset", 0)
 
         # Αν είναι player sprite, κάνουμε sort με βάση τα "πόδια" (bottom)
-        if isinstance(sprite, PlayerSprite):
+        if isinstance(sprite, (PlayerSprite, EnemySprite)):
             return sprite.bottom
 
         return sprite.center_y + offset     # Για όλα τα άλλα sprites, sort με βάση το center_y + offset
@@ -518,9 +333,13 @@ class MyGame(arcade.View):
         self.map_width = self.tile_map.width * self.tile_map.tile_width
         self.map_height = self.tile_map.height * self.tile_map.tile_height
 
-        # Φόρτωση animations
-        if self.player_animations is None:
-            self.player_animations = load_player_animations()
+        # Φόρτωση animations με βάση την κλάση που διάλεξε ο παίκτης
+        if not hasattr(self.window, "class_name") or not self.window.class_name:
+            raise RuntimeError("No class selected! window.class_name is missing.")
+
+        chosen_class = self.window.class_name
+        print("Loading animations for:", chosen_class)
+        self.player_animations = load_player_animations(chosen_class)
 
         # Δημιουργία player sprite
         if self.player_sprite is None:
@@ -585,6 +404,11 @@ class MyGame(arcade.View):
             # Μπάρες για άλλους παίκτες
             for spr in self.other_sprites.values():
                 if isinstance(spr, PlayerSprite):
+                    self.draw_status_bars(spr)
+
+            # Μπάρες για enemies
+            for spr in self.enemy_sprites.values():
+                if isinstance(spr, EnemySprite) and not getattr(spr, "dead", False):
                     self.draw_status_bars(spr)
 
         self.timer_text.draw()      # Ζωγραφίζουμε το timer
@@ -690,7 +514,7 @@ class MyGame(arcade.View):
                 if self.enemy_animations is None:
                     self.enemy_animations = load_enemy_animations()
 
-                espr = EnemySprite(self.enemy_animations, scale=2.0)
+                espr = EnemySprite(self.enemy_animations)
                 espr.nickname = eid   # πχ "orc1"
                 self.enemy_sprites[eid] = espr
                 self.enemy_list.append(espr)
@@ -978,6 +802,10 @@ def main():
             if not hasattr(window, "player_id"):
                 # Πηγαίνουμε στο view δημιουργίας χαρακτήρα
                 window.show_view(CreatePlayerView())
+                return
+            
+            if not hasattr(window, "class_name") or not window.class_name:
+                window.show_view(ClassSelectView())
                 return
 
         # Παίρνουμε το player id και το nickname που δημιουργήθηκε στο menu / character creation

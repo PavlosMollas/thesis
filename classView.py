@@ -177,11 +177,12 @@ class ClassSelectView(arcade.View):
 
                 print("Class selected:", self.window.class_name)
 
-                create_player(
-                    player_id=self.window.player_id,
-                    nickname=self.window.nickname,
-                    class_name=self.window.class_name
-                )
+                if hasattr(self.window, "player_id") and hasattr(self.window, "nickname"):
+                    create_player(
+                        player_id=self.window.player_id,
+                        nickname=self.window.nickname,
+                        class_name=self.window.class_name
+                    )
 
                 # game start
                 start_game = getattr(self.window, "start_game", None)
