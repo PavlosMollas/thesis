@@ -102,6 +102,7 @@ for (name, x, y) in enemy_spawns:
         "state": "idle",
         "dir": "down",
         "dead": False,
+        "hurt_seq": 0,
 
         # combat stats
         "hp": defs["hp_max"],
@@ -168,9 +169,28 @@ async def handle_control():
                 "x": x,         # Θέση
                 "y": y, 
                 "nickname": nickname,   # Ψευδώνυμο
-                "level": 1,      
-                "hp": 1.0,       
+                "level": 1,     
+
+                # Combat 
+                "hp": 1.0,      
+                "hp_cur": 100,
+                "hp_max": 100, 
                 "energy": 1.0,   
+                "resist": 0,
+
+                # State
+                "state": "idle",
+                "dir": "down",
+                "dead": False,
+                "hurt_seq": 0,
+
+                # Attack
+                "attack_requested": False,
+                "attack_dir": "down",
+                "attack_cooldown": 0.45,
+                "next_attack_time": 0.0,
+                "damage": 35,
+
                 "move_dir": "STOP",
                 }   
 
@@ -364,6 +384,9 @@ def update_enemy_ai_and_movement():
         nearest_pid = None
         nearest_d = 1e9
         for pid, p in players.items():
+            if p.get("dead", False):
+                continue
+
             d = dist(e["x"], e["y"], p["x"], p["y"])
             if d < nearest_d:
                 nearest_d = d
@@ -377,7 +400,7 @@ def update_enemy_ai_and_movement():
         # lose target
         if e["target"] is not None:
             tp = players.get(e["target"])
-            if tp is None:
+            if tp is None or tp.get("dead", False):
                 e["target"] = None
             else:
                 d = dist(e["x"], e["y"], tp["x"], tp["y"])
@@ -450,7 +473,7 @@ def apply_enemy_attacks():
             continue
 
         tp = players.get(e["target"])
-        if tp is None:
+        if tp is None or tp.get("dead", False):
             e["target"] = None
             e["pending_hit_time"] = 0.0
             continue
@@ -498,21 +521,108 @@ def apply_enemy_attacks():
                 tp["hp_max"] = player_hp_max
                 tp["hp"] = hp_cur / player_hp_max
 
+                if hp_cur <= 0:
+                    tp["dead"] = True
+                    tp["state"] = "death"
+                else:
+                    tp["hurt_seq"] = tp.get("hurt_seq", 0) + 1
+
+def apply_player_attacks():
+    now = time.time()
+
+    for pid, p in players.items():
+        if p.get("dead", False):
+            continue
+
+        if not p.get("attack_requested", False):
+            continue
+
+        p["attack_requested"] = False
+
+        if now < p.get("next_attack_time", 0.0):
+            continue
+
+        p["next_attack_time"] = now + p.get("attack_cooldown", 0.45)
+
+        attack_dir = p.get("attack_dir", "down")
+        px = p["x"]
+        py = p["y"]
+
+        attack_range = 70
+
+        target_eid = None
+        best_dist = 999999
+
+        for eid, e in enemies.items():
+            if e.get("dead", False):
+                continue
+
+            dx = e["x"] - px
+            dy = e["y"] - py
+
+            # directional filter
+            if attack_dir == "up" and dy <= 0:
+                continue
+            if attack_dir == "down" and dy >= 0:
+                continue
+            if attack_dir == "left" and dx >= 0:
+                continue
+            if attack_dir == "right" and dx <= 0:
+                continue
+
+            d = dist(px, py, e["x"], e["y"])
+            if d > attack_range:
+                continue
+
+            if d < best_dist:
+                best_dist = d
+                target_eid = eid
+
+        if target_eid is None:
+            continue
+
+        e = enemies[target_eid]
+
+        dmg = max(0, p.get("damage", 35) - e.get("resist", 0))
+        e["hp"] -= dmg
+
+        if e["hp"] <= 0:
+            e["hp"] = 0
+            e["dead"] = True
+            e["state"] = "death"
+        else:
+            e["hurt_seq"] = e.get("hurt_seq", 0) + 1
+
 # Μέθοδος για τα inputs
 async def handle_inputs():
     while True:
-        msg = await pull_socket.recv_json() # Λαμβάνει τα μηνύματα κίνησης από τους πελάτες
+        msg = await pull_socket.recv_json()
         pid = msg["id"]
-        direction = msg.get("move", "STOP")
 
-        # Αγνοεί τις κινήσεις από παίκτες που δεν είναι συνδεδεμένοι
         if pid not in players:
             continue
 
-        if direction not in ("UP", "DOWN", "LEFT", "RIGHT", "STOP"):
-            direction = "STOP"
+        # movement
+        if "move" in msg:
+            direction = msg.get("move", "STOP")
 
-        players[pid]["move_dir"] = direction       
+            if direction not in ("UP", "DOWN", "LEFT", "RIGHT", "STOP"):
+                direction = "STOP"
+
+            if not players[pid].get("dead", False):
+                players[pid]["move_dir"] = direction
+
+        # attack
+        if msg.get("attack"):
+            if players[pid].get("dead", False):
+                continue
+
+            adir = msg.get("dir", "DOWN")
+            if adir not in ("UP", "DOWN", "LEFT", "RIGHT"):
+                adir = "DOWN"
+
+            players[pid]["attack_requested"] = True
+            players[pid]["attack_dir"] = adir.lower()    
 
 # Μέθοδος για τη μετάδοση κατάστασης παιχνιδιού
 async def broadcast_state():
@@ -526,6 +636,10 @@ async def broadcast_state():
         prev_enemies = {eid: (e["x"], e["y"]) for eid, e in enemies.items()}
 
         for pid, p in players.items():
+            if p.get("dead", False):
+                p["move_dir"] = "STOP"
+                continue
+
             direction = p.get("move_dir", "STOP")
 
             # Κίνηση του παίκτη με βάση την εισερχόμενη εντολή
@@ -553,6 +667,23 @@ async def broadcast_state():
             if not player_hits_walls(p["x"], new_y):
                 p["y"] = new_y
 
+            # visual state/direction
+            if not p.get("dead", False):
+                if direction == "UP":
+                    p["dir"] = "up"
+                    p["state"] = "walk"
+                elif direction == "DOWN":
+                    p["dir"] = "down"
+                    p["state"] = "walk"
+                elif direction == "LEFT":
+                    p["dir"] = "left"
+                    p["state"] = "walk"
+                elif direction == "RIGHT":
+                    p["dir"] = "right"
+                    p["state"] = "walk"
+                else:
+                    p["state"] = "idle"
+
         # 1) enemy AI + movement
         update_enemy_ai_and_movement()
 
@@ -561,6 +692,8 @@ async def broadcast_state():
 
         # 3) enemy attacks (damage to players)
         apply_enemy_attacks()
+
+        apply_player_attacks()
 
         # Στέλνει την κατάσταση του παιχνιδιού σε όλους τους πελάτες
         await pub_socket.send_json({

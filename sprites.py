@@ -1,4 +1,5 @@
 import arcade
+import time
 
 # Ρυθμίσεις Sprite sheet 
 FRAME_W = 64    # Πλάτος frame στο sprite sheet
@@ -154,9 +155,23 @@ class PlayerSprite(arcade.Sprite):
 
         self.animations = animations
 
+        # Ορατό state
         self.state = IDLE           # Animation state
         self.direction = DOWN       # Tρέχουσα κατεύθυνση
         self.last_direction = DOWN  # Tελευταία κατεύθυνση (για idle)
+
+        # Βασικό state
+        self.base_state = IDLE
+        self.base_direction = DOWN
+
+        # Flags για hurt και death states
+        self.hurt_active = False
+        self.death_started = False
+        self.death_anim_finished = False
+        self.death_hold_until = 0.0
+        self.despawn = False
+
+        self.last_hurt_seq = 0
 
         self.cur_frame = 0          # Index frame animation
         self.time_acc = 0.0         # Χρόνος για την αλλαγή του frame
@@ -187,69 +202,157 @@ class PlayerSprite(arcade.Sprite):
 
     # Αλλάζει animation state / direction
     # Κάνει reset animation μόνο όταν αλλάζει state
-    def set_state(self, state, direction=None):
+    def force_state(self, state, direction=None, reset=False):
         if direction:
-            self.direction = direction  # Ενημερώνουμε την τρέχουσα κατεύθυνση του sprite
+            self.direction = direction
             self.last_direction = direction
 
-        # Ελέγχουμε αν αλλάζει η κατάσταση του animation
-        if state != self.state:
-            self.state = state  # Αποθηκεύουμε τη νέα κατάστασ
-            self.cur_frame = 0  # Μηδενίζουμε το frame ώστε το animation να ξεκινήσει από το πρώτο frame της νέας κατάστασης
-            self.time_acc = 0.0 # Μηδενίζουμε το χρόνο για να μην συνεχίσει από προηγούμενο state
-            
-        # Ορίζουμε το texture που θα εμφανιστεί στο sprite
-        self.texture = self.animations[self.state][self.direction][self.cur_frame]
+        if reset or state != self.state:
+            self.state = state
+            self.cur_frame = 0
+            self.time_acc = 0.0
+        else:
+            self.state = state
 
-    #  Ενημέρωση animation με βάση τον χρόνο
+        frames = self.animations[self.state][self.direction]
+        if self.cur_frame >= len(frames):
+            self.cur_frame = len(frames) - 1
+
+        self.texture = frames[self.cur_frame]
+
+    def set_base_state(self, state, direction=None):
+        if direction:
+            self.base_direction = direction
+
+        self.base_state = state
+
+        # death υπερισχύει όλων
+        if self.death_started:
+            return
+
+        # όσο παίζει hurt, δεν το κόβουμε
+        if self.hurt_active:
+            return
+
+        # αλλιώς δείξε το base αμέσως
+        self.force_state(self.base_state, self.base_direction, reset=(self.state != state))
+
+    def set_state(self, state, direction=None):
+        # compatibility wrapper για το υπάρχον code
+        # αργότερα θα αντικατασταθεί σταδιακά με set_base_state / trigger_hurt / trigger_death
+        if state == HURT:
+            self.trigger_hurt(direction)
+        elif state == DEATH:
+            self.trigger_death(direction)
+        else:
+            self.set_base_state(state, direction)
+
+    def trigger_hurt(self, direction=None):
+        if self.death_started:
+            return
+
+        # αν ήδη παίζει hurt, ignore
+        if self.hurt_active:
+            return
+
+        self.hurt_active = True
+        hurt_dir = direction or self.base_direction or self.last_direction
+        self.force_state(HURT, hurt_dir, reset=True)
+
+    def trigger_death(self, direction=None):
+        if self.death_started:
+            return
+
+        self.death_started = True
+        self.hurt_active = False
+        self.attack_finished = False
+        self.attack_dir = None
+
+        death_dir = direction or self.direction or self.base_direction or self.last_direction
+        self.force_state(DEATH, death_dir, reset=True)
+
     def update_animation(self, delta_time):
-        frames = self.animations[self.state][self.direction]    # Παίρνουμε τη λίστα των frames για το τρέχον state και την τρέχουσα κατεύθυνση
-        self.time_acc += delta_time     # Προσθέτουμε τον χρόνο που πέρασε από το προηγούμενο frame
+        frames = self.animations[self.state][self.direction]
+        self.time_acc += delta_time
 
-        # Τrue μόνο για 1 frame όταν τελειώσει attack
         self.attack_finished = False
 
-        # Αν έχει περάσει αρκετός χρόνος ώστε να αλλάξει frame το animation
+        # αν έχει τελειώσει death animation, κράτα το τελευταίο frame μέχρι να περάσει το hold
+        if self.death_started and self.death_anim_finished:
+            if time.time() >= self.death_hold_until:
+                self.despawn = True
+            return
+
         if self.time_acc >= self.frame_time:
-            self.time_acc = 0.0         # Μηδενίζουμε τη μεταβλητή για να ξεκινήσει νέα μέτρηση χρόνου
+            self.time_acc = 0.0
 
             if self.state == DEATH:
-
-                # Στο death animation δεν γίνεται loop
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
+                    self.texture = frames[self.cur_frame]
+                else:
+                    # κράτα το τελευταίο frame
+                    if not self.death_anim_finished:
+                        self.death_anim_finished = True
+                        self.death_hold_until = time.time() + 1.5
+                    self.texture = frames[self.cur_frame]
+                return
 
-            elif self.state in (ATTACK, WALK_ATTACK):
-                # ATTACK: δεν κάνει loop, και όταν τελειώσει γυρνάει σε IDLE
+            if self.state == HURT:
+                # one-shot hurt
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
+                    self.texture = frames[self.cur_frame]
+                else:
+                    # τέλος hurt -> επιστροφή στο τρέχον base
+                    self.hurt_active = False
+                    self.force_state(self.base_state, self.base_direction, reset=True)
+                return
+
+            if self.state in (ATTACK, WALK_ATTACK):
+                if self.cur_frame < len(frames) - 1:
+                    self.cur_frame += 1
+                    self.texture = frames[self.cur_frame]
                 else:
                     self.attack_finished = True
-                    return  # μην συνεχίσεις να γράφεις texture από τα παλιά frames
-            
-            else:
-                self.cur_frame = (self.cur_frame + 1) % len(frames)     # Προχωράμε στο επόμενο frame του animation, το modulo εξασφαλίζει ότι όταν φτάσουμε στο τελευταίο frame, θα επιστρέψουμε στο πρώτο
-            self.texture = frames[self.cur_frame]        # Ενημερώνουμε το texture του sprite με το νέο frame του animation
+                return
+
+            # loop για idle/walk
+            self.cur_frame = (self.cur_frame + 1) % len(frames)
+            self.texture = frames[self.cur_frame]
 
 class EnemySprite(arcade.Sprite):
     def __init__(self, animations):
         super().__init__(scale=SCALE)
 
         self.dead = False
+        self.despawn = False
 
-        # Οπτικά Στατιστικά (Client)
+        # Οπτικό UI Εχθρών
         self.hp = 1.0
         self.hp_max = 1.0
         self.nickname = "Orc"
-        self.energy = 0.0
 
         self.nickname_text = arcade.Text("", 0, 0, arcade.color.WHITE, 12, anchor_x="center")
-        self.level_text = arcade.Text("", 0, 0, arcade.color.WHITE, 12, anchor_x="right")
 
         self.animations = animations
+
+        # Ορατό State
         self.state = IDLE
         self.direction = DOWN
         self.last_direction = DOWN
+
+        # Βασικό State
+        self.base_state = IDLE
+        self.base_direction = DOWN
+
+        # Flags για hurt και death states
+        self.hurt_active = False
+        self.death_started = False
+        self.death_anim_finished = False
+        self.death_hold_until = 0.0
+
+        self.last_hurt_seq = 0
 
         self.cur_frame = 0
         self.time_acc = 0.0
@@ -257,34 +360,106 @@ class EnemySprite(arcade.Sprite):
 
         self.texture = self.animations[self.state][self.direction][0]
 
-    def set_state(self, state, direction=None):
+    def force_state(self, state, direction=None, reset=False):
         if direction:
             self.direction = direction
             self.last_direction = direction
 
-        if state != self.state:
+        if reset or state != self.state:
             self.state = state
             self.cur_frame = 0
             self.time_acc = 0.0
+        else:
+            self.state = state
 
-        self.texture = self.animations[self.state][self.direction][self.cur_frame]
+        frames = self.animations[self.state][self.direction]
+        if self.cur_frame >= len(frames):
+            self.cur_frame = len(frames) - 1
+
+        self.texture = frames[self.cur_frame]
+
+    def set_base_state(self, state, direction=None):
+        if direction:
+            self.base_direction = direction
+
+        self.base_state = state
+
+        if self.death_started:
+            return
+
+        if self.hurt_active:
+            return
+
+        self.force_state(self.base_state, self.base_direction, reset=(self.state != state))
+
+    def set_state(self, state, direction=None):
+        # compatibility wrapper
+        if state == HURT:
+            self.trigger_hurt(direction)
+        elif state == DEATH:
+            self.trigger_death(direction)
+        else:
+            self.set_base_state(state, direction)
+
+    def trigger_hurt(self, direction=None):
+        if self.death_started:
+            return
+
+        if self.hurt_active:
+            return
+
+        self.hurt_active = True
+        hurt_dir = direction or self.base_direction or self.last_direction
+        self.force_state(HURT, hurt_dir, reset=True)
+
+    def trigger_death(self, direction=None):
+        if self.death_started:
+            return
+
+        self.death_started = True
+        self.hurt_active = False
+
+        death_dir = direction or self.direction or self.base_direction or self.last_direction
+        self.force_state(DEATH, death_dir, reset=True)
 
     def update_animation(self, delta_time: float):
         frames = self.animations[self.state][self.direction]
         self.time_acc += delta_time
 
+        # έχει τελειώσει το death animation, περίμενε το hold
+        if self.death_started and self.death_anim_finished:
+            if time.time() >= self.death_hold_until:
+                self.dead = True
+                self.despawn = True
+            return
+
         if self.time_acc >= self.frame_time:
             self.time_acc = 0.0
 
             if self.state == DEATH:
-                # Αν δεν είμαστε στο τελευταίο frame
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
-
+                    self.texture = frames[self.cur_frame]
                 else:
-                    # animation finished
-                    self.dead = True
-            else:
-                self.cur_frame = (self.cur_frame + 1) % len(frames)
+                    if not self.death_anim_finished:
+                        self.death_anim_finished = True
+                        self.death_hold_until = time.time() + 1.5
+                    self.texture = frames[self.cur_frame]
+                return
 
+            if self.state == HURT:
+                if self.cur_frame < len(frames) - 1:
+                    self.cur_frame += 1
+                    self.texture = frames[self.cur_frame]
+                else:
+                    self.hurt_active = False
+                    self.force_state(self.base_state, self.base_direction, reset=True)
+                return
+
+            if self.state in (ATTACK, WALK_ATTACK):
+                self.cur_frame = (self.cur_frame + 1) % len(frames)
+                self.texture = frames[self.cur_frame]
+                return
+
+            self.cur_frame = (self.cur_frame + 1) % len(frames)
             self.texture = frames[self.cur_frame]

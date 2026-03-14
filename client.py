@@ -56,6 +56,13 @@ async def send_move(direction: str):
         "move": direction
     })
 
+async def send_attack(direction: str):
+    await push_socket.send_json({
+        "id": CLIENT_PLAYER_ID,
+        "attack": True,
+        "dir": direction
+    })
+
 # Λαμβάνει συνεχώς game state από τον server και το βάζει στην thread-safe queue
 async def receive_state():
     while True:
@@ -268,7 +275,7 @@ class MyGame(arcade.View):
             cam_y + (target_y - cam_y) * lerp
         )
 
-    def draw_status_bars(self, spr: arcade.Sprite):
+    def draw_player_status_bars(self, spr: PlayerSprite):
         # θέση πάνω από το κεφάλι
         x = spr.center_x
         y = spr.top + 18
@@ -309,6 +316,33 @@ class MyGame(arcade.View):
         y2 = y - (energy_h + gap)
         arcade.draw_lbwh_rectangle_filled(left, y2, w, energy_h, arcade.color.DARK_YELLOW)
         arcade.draw_lbwh_rectangle_filled(left, y2, w * en, energy_h, arcade.color.YELLOW)
+
+    def draw_enemy_status_bars(self, spr: EnemySprite):
+        x = spr.center_x
+        y = spr.top + 18
+
+        w = 54
+        hp_h = 7
+
+        hp_ratio = 0.0
+        if getattr(spr, "hp_max", 0) > 0:
+            hp_ratio = spr.hp / spr.hp_max
+        hp_ratio = max(0.0, min(1.0, hp_ratio))
+
+        left = x - w / 2
+
+        # nickname
+        spr.nickname_text.text = getattr(spr, "nickname", "")
+        spr.nickname_text.x = x
+        spr.nickname_text.y = y + hp_h + 3
+        spr.nickname_text.draw()
+
+        # HP background
+        arcade.draw_lbwh_rectangle_filled(left - 1, y - 1, w + 2, hp_h + 2, arcade.color.BLACK)
+
+        # HP bar
+        arcade.draw_lbwh_rectangle_filled(left, y, w, hp_h, arcade.color.BLACK)
+        arcade.draw_lbwh_rectangle_filled(left, y, w * hp_ratio, hp_h, arcade.color.RED)
 
     # Μέθοδος για την αρχικοποίηση του View όταν γίνεται ενεργό
     def on_show_view(self):
@@ -399,17 +433,17 @@ class MyGame(arcade.View):
 
             # Μπάρες για local player
             if self.player_sprite:
-                self.draw_status_bars(self.player_sprite)
+                self.draw_player_status_bars(self.player_sprite)
 
             # Μπάρες για άλλους παίκτες
             for spr in self.other_sprites.values():
                 if isinstance(spr, PlayerSprite):
-                    self.draw_status_bars(spr)
+                    self.draw_player_status_bars(spr)
 
             # Μπάρες για enemies
             for spr in self.enemy_sprites.values():
                 if isinstance(spr, EnemySprite) and not getattr(spr, "dead", False):
-                    self.draw_status_bars(spr)
+                    self.draw_enemy_status_bars(spr)
 
         self.timer_text.draw()      # Ζωγραφίζουμε το timer
 
@@ -458,6 +492,10 @@ class MyGame(arcade.View):
             level = pos.get("level", 1)
             hp = pos.get("hp", 1.0)
             energy = pos.get("energy", 1.0)
+            pstate = pos.get("state", IDLE)
+            pdir = pos.get("dir", DOWN)
+            phurt_seq = pos.get("hurt_seq", 0)
+            pdead = pos.get("dead", False)
 
             # Αν είναι ο τοπικός παίκτης, χρησιμοποιούμε το main sprite
             if pid == CLIENT_PLAYER_ID:
@@ -475,6 +513,16 @@ class MyGame(arcade.View):
             sprite.level = level
             sprite.hp = hp
             sprite.energy = energy
+
+            # server-driven visual sync
+            if pid != CLIENT_PLAYER_ID or sprite.state not in (ATTACK, WALK_ATTACK):
+                sprite.set_base_state(pstate, pdir)
+
+            if pdead:
+                sprite.trigger_death(pdir)
+            elif phurt_seq > getattr(sprite, "last_hurt_seq", 0):
+                sprite.last_hurt_seq = phurt_seq
+                sprite.trigger_hurt(pdir)
 
             # Buffer θέσεων: κρατάμε τις 2 πιο πρόσφατες θέσεις από τον server
             buf = self.position_buffers.setdefault(pid, [])
@@ -501,13 +549,14 @@ class MyGame(arcade.View):
                 self.interp_t.pop(pid, None)
 
         for eid, epos in enemies_state.items():
-            ex = epos["x"]; ey = epos["y"]
+            ex = epos["x"]
+            ey = epos["y"]
             estate = epos.get("state", IDLE)
             edir = epos.get("dir", DOWN)
             hp = epos.get("hp", 1.0)
-            energy = epos.get("energy", 1.0)
-            lvl = epos.get("level", 1)
+            hp_max = epos.get("hp_max", 1.0)
             dead = epos.get("dead", False)
+            hurt_seq = epos.get("hurt_seq", 0)
 
             # create if missing
             if eid not in self.enemy_sprites:
@@ -515,7 +564,6 @@ class MyGame(arcade.View):
                     self.enemy_animations = load_enemy_animations()
 
                 espr = EnemySprite(self.enemy_animations)
-                espr.nickname = eid   # πχ "orc1"
                 self.enemy_sprites[eid] = espr
                 self.enemy_list.append(espr)
                 self.actor_list.append(espr)   # για depth sort μαζί με όλους
@@ -526,15 +574,17 @@ class MyGame(arcade.View):
             espr.center_x = ex
             espr.center_y = ey
             espr.hp = hp
-            espr.energy = energy
-            espr.level = lvl
+            espr.hp_max = hp_max
 
-            # state/dir (αν έχεις strings ίδιο format με constants)
-            espr.set_state(estate, edir)
+            # state/dir
+            espr.set_base_state(estate, edir)
 
-            # remove if dead (server-authoritative)
+            # remove if dead 
             if dead:
-                espr.dead = True
+                espr.trigger_death(edir)
+            elif hurt_seq > getattr(espr, "last_hurt_seq", 0):
+                espr.last_hurt_seq = hurt_seq
+                espr.trigger_hurt(edir)
         
         existing_eids = set(enemies_state.keys())
         for eid in list(self.enemy_sprites.keys()):
@@ -682,6 +732,9 @@ class MyGame(arcade.View):
         if self.player_sprite:
             self.player_sprite.update_animation(delta_time)
 
+            if getattr(self.player_sprite, "despawn", False):
+                self.player_sprite.remove_from_sprite_lists()
+
             # --- Consume attack buffer (Case C) ---
             if self.player_sprite.attack_finished:
                 self.player_sprite.attack_finished = False
@@ -691,19 +744,18 @@ class MyGame(arcade.View):
                     next_state = getattr(self, "buffer_attack_state", None) or ATTACK
                     self.buffer_attack_state = None
 
-                    # ξανα-LOCK με την τρέχουσα last_direction
                     self.player_sprite.attack_dir = self.player_sprite.last_direction
-                    self.player_sprite.set_state(next_state, self.player_sprite.attack_dir)
+                    self.player_sprite.base_state = next_state
+                    self.player_sprite.base_direction = self.player_sprite.attack_dir
+                    self.player_sprite.force_state(next_state, self.player_sprite.attack_dir, reset=True)
 
                 else:
-                    # καθάρισε lock
                     self.player_sprite.attack_dir = None
 
-                    # επιστροφή σε σωστό locomotion
                     if self.held_move:
-                        self.player_sprite.set_state(WALK, self.player_sprite.last_direction)
+                        self.player_sprite.set_base_state(WALK, self.player_sprite.last_direction)
                     else:
-                        self.player_sprite.set_state(IDLE, self.player_sprite.last_direction)
+                        self.player_sprite.set_base_state(IDLE, self.player_sprite.last_direction)
 
         # Ενημέρωση animation άλλων παικτών
         for spr in self.other_sprites.values():
@@ -711,7 +763,7 @@ class MyGame(arcade.View):
 
         for e in list(self.enemy_list):
             e.update_animation(delta_time)
-            if getattr(e, "dead", False):
+            if getattr(e, "despawn", False):
                 e.remove_from_sprite_lists()
             
         # Ενημέρωση κάμερας
@@ -729,7 +781,7 @@ class MyGame(arcade.View):
         if key == arcade.key.SPACE and self.player_sprite:
             spr = self.player_sprite
 
-            if spr.state == DEATH:
+            if spr.state == DEATH or getattr(spr, "death_started", False):
                 return
 
             attack_state = WALK_ATTACK if self.is_moving_input() else ATTACK
@@ -750,7 +802,15 @@ class MyGame(arcade.View):
 
             # LOCK direction για ΟΛΟ το attack
             spr.attack_dir = spr.last_direction
-            spr.set_state(attack_state, spr.attack_dir)
+            spr.base_state = attack_state
+            spr.base_direction = spr.attack_dir
+            spr.force_state(attack_state, spr.attack_dir, reset=True)
+        
+            if NETWORK_LOOP is not None:
+                dir_str = self.dir_to_move_str(spr.attack_dir)
+                if dir_str is not None:
+                    asyncio.run_coroutine_threadsafe(send_attack(dir_str), NETWORK_LOOP)
+
             return
 
     # Movement keys (μόνο WASD) - last pressed wins
