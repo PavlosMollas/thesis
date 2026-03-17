@@ -77,7 +77,8 @@ async def control_loop():
     await control_socket.send_json({
         "type": "connect",
         "id": CLIENT_PLAYER_ID,
-        "nickname": CLIENT_NICKNAME
+        "nickname": CLIENT_NICKNAME,
+        "class_name": getattr(arcade.get_window(), "class_name", None)
     })
     reply = await control_socket.recv_json()
     print("[Control reply]:", reply)
@@ -170,6 +171,8 @@ class ConnectingView(arcade.View):
 class MyGame(arcade.View):
     def __init__(self):
         super().__init__()
+
+        self.player_animation_dict = {}     # Dictionary που κρατάει τα animation της κάθε κλάσης για χρήση (αντί να φορτώνεται από το δίσκο κάθε φορά)
 
         self.held_keys = set()    # Set που κρατάει ποια πλήκτρα είναι πατημένα (για hold keys)
         # Movement μόνο (WASD): last pressed wins
@@ -374,6 +377,7 @@ class MyGame(arcade.View):
         chosen_class = self.window.class_name
         print("Loading animations for:", chosen_class)
         self.player_animations = load_player_animations(chosen_class)
+        self.player_animation_dict[chosen_class] = self.player_animations
 
         # Δημιουργία player sprite
         if self.player_sprite is None:
@@ -425,7 +429,8 @@ class MyGame(arcade.View):
 
         # Ενεργοποίηση world camera
         with self.world_camera.activate():
-            self.terrain_list.draw()        # Ζωγραφίζουμε terrain
+            if self.terrain_list:
+                self.terrain_list.draw()        # Ζωγραφίζουμε terrain
 
             # Ταξινόμηση αντικειμένων με βάση το Y (για σωστό βάθος)
             self.actor_list.sort(key=self.sort_key)  # Ζωγραφίζουμε όλα τα sprites
@@ -489,6 +494,7 @@ class MyGame(arcade.View):
             x = pos["x"]
             y = pos["y"]
             nickname = pos.get("nickname", pid)
+            class_name = pos.get("class_name", "Warrior")   # Default τιμή για fallback
             level = pos.get("level", 1)
             hp = pos.get("hp", 1.0)
             energy = pos.get("energy", 1.0)
@@ -503,7 +509,11 @@ class MyGame(arcade.View):
             else:
                 # Αν είναι άλλος παίκτης και δεν έχουμε sprite, το δημιουργούμε
                 if pid not in self.other_sprites:
-                    spr = PlayerSprite(self.player_animations)
+                    if class_name not in self.player_animation_dict:
+                        self.player_animation_dict[class_name] = load_player_animations(class_name)
+
+                    spr = PlayerSprite(self.player_animation_dict[class_name])
+                    #spr.class_name = class_name
                     self.other_sprites[pid] = spr
                     self.actor_list.append(spr)
                 sprite = self.other_sprites[pid]
@@ -661,7 +671,7 @@ class MyGame(arcade.View):
             moving = abs(move_dx) > 0.01 or abs(move_dy) > 0.01
 
             # --- IMPORTANT: Μην overwrit-άρεις combat states του local player ---
-            if pid == CLIENT_PLAYER_ID and sprite.state in (ATTACK, HURT, DEATH, WALK_ATTACK):
+            if sprite.state in (ATTACK, HURT, DEATH, WALK_ATTACK):
                 # προαιρετικά: μπορείς να ενημερώνεις last_direction από την κίνηση, αλλά όχι state
                 locked = getattr(sprite, "attack_dir", None)
                 if locked is not None:

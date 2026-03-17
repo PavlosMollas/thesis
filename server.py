@@ -20,6 +20,7 @@ tile_map = arcade.load_tilemap(
 )
 
 wall_list = tile_map.sprite_lists["Walls"]  # Παίρνουμε το walls layer του tiled για να βάλουμε collision μόνο σε αυτά
+bridge_list = tile_map.sprite_lists.get("Bridge")
 
 # Διαστάσεις χάρτη σε pixels
 MAP_WIDTH  = tile_map.width * tile_map.tile_width
@@ -31,11 +32,13 @@ PLAYER_HEIGHT = 48
 
 SPEED = 5             # Ταχύτητα κίνησης του παίκτη
 
-STUCK_THRESHOLD = 1.0     # seconds χωρίς ουσιαστική κίνηση -> θεωρείται stuck
-UNSTUCK_DURATION = 0.8    # seconds που θα κάνει πλάγια κίνηση για να ξεκολλήσει
-MIN_PROGRESS_PX = 0.6     # κάτω από αυτό θεωρείται "δεν κουνήθηκε"
+# Ρυθμίσεις για ανίχνευση "κολλήματος" εχθρού:
+# αν δεν έχει ουσιαστική μετακίνηση για κάποιο χρόνο, θεωρείται stuck
+STUCK_THRESHOLD = 1.0     # δευτερόλεπτα χωρίς ουσιαστική πρόοδο
+UNSTUCK_DURATION = 0.8    # διάρκεια κίνησης για ξεκόλλημα
+MIN_PROGRESS_PX = 0.6     # ελάχιστη μετακίνηση σε pixels ώστε να θεωρηθεί πρόοδος
 
-server_start_time = time.time() # Χρόνος παιχνιδιού
+server_start_time = time.time() # Χρόνος εκκίνησης server
 
 ctx = zmq.asyncio.Context()     # Δημιουργία του zmq context για τη σύνδεση με τα sockets
 
@@ -59,52 +62,56 @@ connected = set()     # Σύνολο παικτών σε σειρά σύνδεσ
 
 spawn_points = []     # Λίστα για το spawn παικτών
 enemy_spawns = []     # Λίστα για το spawn εχθρών
-next_spawn_index = 0
 
-object_layer = tile_map.object_lists.get("Object")  # Παίρνουμε το object layer για το spawn 
+next_spawn_index = 0  # Δείκτης για κυκλική επιλογή επόμενου spawn point παίκτη
+
+object_layer = tile_map.object_lists.get("Object")  # Παίρνουμε το object layer για το spawn από το TMX, όπου έχουμε ορίσει σημεία spawn μέσα από το Tiled
 
 if not object_layer:
     raise RuntimeError("No Object layer found in TMX map")
 
+# Διαβάζουμε όλα τα objects από το object layer
 for obj in object_layer:
     if obj.name == "player_spawn":  # Για κάθε object με το όνομα player_spawn (έτσι έχει ονομαστεί στο tiled), προσθέτουμε το σημείο στη λίστα
         x, y = obj.shape
         spawn_points.append((x, y))
     
+    # Αν το object ξεκινά με "orc", το θεωρούμε enemy spawn
     elif obj.name and obj.name.startswith("orc"):
         x, y = obj.shape
         enemy_spawns.append((obj.name, x, y))
 
+# Πρέπει να υπάρχει τουλάχιστον ένα spawn point για παίκτες
 if not spawn_points:
     raise RuntimeError("No player_spawn objects found in Object layer")
 
-print("Spawn points loaded from TMX:", spawn_points)
+print("Spawn points loaded from TMX:", spawn_points)    # Εκτύπωση σημείων στον server για debugging
 print("Enemy spawns:", enemy_spawns)
 
-# init enemies from tiled spawns
+# Φόρτωση εχθρών από το spawn του tiled
 for (name, x, y) in enemy_spawns:
 
-    etype = name   # Όνομα εχθρού
+    etype = name   # Ο τύπος του εχθρού προκύπτει από το όνομα του object στο map
     defs = ENEMY_TYPES[etype]
 
     enemies[name] = {
 
-        # identity
+        # Είδος εχθρού
         "type": etype,
 
-        # position
+        # Τρέχουσα θέση και αρχική θέση spawn
         "x": x,
         "y": y,
         "spawn_x": x,
         "spawn_y": y,
 
-        # state
+        # Κατάσταση animation / συμπεριφοράς
         "state": "idle",
         "dir": "down",
         "dead": False,
         "hurt_seq": 0,
 
-        # combat stats
+        # Στατιστικά μάχης
         "hp": defs["hp_max"],
         "hp_max": defs["hp_max"],
         "damage": defs["damage"],
@@ -112,22 +119,22 @@ for (name, x, y) in enemy_spawns:
         "attack_speed": defs["attack_speed"],
         "move_speed": defs["move_speed"],
 
-        # hitbox
+        # Διαστάσεις hitbox
         "hitbox_w": defs["hitbox_w"],
         "hitbox_h": defs["hitbox_h"],
 
-        # AI ranges
-        "aggro_radius": defs["aggro_radius"],
-        "lose_radius": defs["lose_radius"],
-        "attack_range": defs["attack_range"],
+        # Αποστάσεις συμπεριφοράς εχθρού
+        "aggro_radius": defs["aggro_radius"],   # απόσταση εντοπισμού παίκτη
+        "lose_radius": defs["lose_radius"],     # απόσταση εγκατάλειψης στόχου
+        "attack_range": defs["attack_range"],   # απόσταση επίθεσης
 
-        # attack timing
+        # Χρονισμός επιθέσεων
         "windup": defs["windup"],
         "attack_cooldown": 1.0 / defs["attack_speed"],
         "next_attack_time": 0.0,
         "pending_hit_time": 0.0,
 
-        # targeting
+        # Τρέχων στόχος και μεταβλητές για stuck handling
         "target": None,
 
         "last_x": x,
@@ -137,20 +144,25 @@ for (name, x, y) in enemy_spawns:
         "unstuck_side": 1,
     }
 
-TICK_DT = 0.02      # Η διάρκεια κάθε "tick" σε δευτερόλεπτα (ρυθμίζει το frame rate)
+TICK_DT = 0.02      # Η διάρκεια κάθε "tick" σε δευτερόλεπτα (ρυθμίζει το frame rate ~50 updates/sec)
 tick = 0            # Μετρητής "tick" για το παιχνίδι
 
-# Μέθοδος για το state των παικτών
+# Μέθοδος για το state των παικτών (connect/disconnect)
 async def handle_control():
     global next_spawn_index
+
     while True:
         msg = await control_socket.recv_json()  # Περιμένει και λαμβάνει τα μηνύματα ελέγχου
         pid = msg["id"]     # Το id του παίκτη
         typ = msg["type"]   # Τύπος αιτήματος (σύνδεση ή αποσύνδεση)
 
+        # Σύνδεση παίκτη
         if typ == "connect":
+            # Αν δεν έχει σταλεί nickname ή class_name, ορίζονται default τιμές
             nickname = msg.get("nickname") or pid
+            class_name = msg.get("class_name") or "Warrior"
 
+            # Αν ο παίκτης είναι ήδη συνδεδεμένος, στέλνουμε απάντηση "ok"
             if pid in connected:
                 await control_socket.send_json({"status": "ok"})
                 continue
@@ -164,225 +176,289 @@ async def handle_control():
 
             x, y = spawn_points[spawn_index % len(spawn_points)]
 
-            # Πληροφορίες παίκτη
+            # Δημιουργία εγγραφής παίκτη
             players[pid] = {
-                "x": x,         # Θέση
+                # Θέση
+                "x": x,         
                 "y": y, 
-                "nickname": nickname,   # Ψευδώνυμο
+
+                # Βασικά στοιχεία
+                "nickname": nickname,  
+                "class_name": class_name,
                 "level": 1,     
 
-                # Combat 
+                # Στατιστικά μάχης 
                 "hp": 1.0,      
                 "hp_cur": 100,
                 "hp_max": 100, 
                 "energy": 1.0,   
                 "resist": 0,
+                "damage": 35,
 
-                # State
+                # Κατάσταση παίκτη
                 "state": "idle",
                 "dir": "down",
                 "dead": False,
                 "hurt_seq": 0,
 
-                # Attack
+                # Στοιχεία επίθεσης
                 "attack_requested": False,
                 "attack_dir": "down",
                 "attack_cooldown": 0.45,
                 "next_attack_time": 0.0,
-                "damage": 35,
+                "attack_anim_until": 0.0,
+                "attack_state": "attack",
 
+                # Κατεύθυνση κίνησης
                 "move_dir": "STOP",
                 }   
 
             print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
 
+            # Επιβεβαίωση σύνδεσης προς client
             await control_socket.send_json({
                 "status": "ok",
             })
 
         # Αποσύνδεση παίκτη
         elif typ == "disconnect":
+            # Παίρνουμε το nickname, αν υπάρχει, αλλιώς χρησιμοποιούμε το player id
             name = players.get(pid, {}).get("nickname", pid)
             print(f"Player {name} DISCONNECTED")
 
+            # Αφαίρεση από connected players και από το players dict
             connected.discard(pid)
             players.pop(pid, None)
 
+            # Επιβεβαίωση αποσύνδεσης προς client
             await control_socket.send_json({"status": "ok"})
 
-# Μέθοδος για το collision
-def collides_with_walls_aabb(x, y, w, h):
+# Μέθοδος που ελέγχει αν ο παίκτης ή ο εχθρός βρίσκεται πάνω σε γέφυρα
+def on_bridge(x, y, w, h):
+    if not bridge_list:
+        return False
+
+    # Υπολογισμός ορίων του hitbox με βάση το κέντρο (x, y)
     left   = x - w / 2
     right  = x + w / 2
     bottom = y - h / 2
     top    = y + h / 2
 
+    # Έλεγχος overlap με κάθε bridge sprite
+    for bridge in bridge_list:
+        if right > bridge.left and left < bridge.right and top > bridge.bottom and bottom < bridge.top:
+            return True
+        
+    return False
+
+# Μέθοδος για το collision
+# Ελέγχει collision με τοίχους χρησιμοποιώντας ορθογώνιο hitbox (AABB)
+def collides_with_walls_aabb(x, y, w, h):
+    # Αν ο παίκτης ή ο εχθρός είναι πάνω στη γέφυρα, αγνοούμε το collision από walls
+    if on_bridge(x, y, w, h):
+        return False
+
+    # Υπολογισμός ορίων AABB (Axis-Aligned Bounding Box)
+    left   = x - w / 2
+    right  = x + w / 2
+    bottom = y - h / 2
+    top    = y + h / 2
+
+    # Έλεγχος overlap με κάθε wall sprite
     for wall in wall_list:
         if right > wall.left and left < wall.right and top > wall.bottom and bottom < wall.top:
             return True
     return False
 
+# Μέθοδος για τον έλεγχο collision του παίκτη με τις σταθερές διαστάσεις του
 def player_hits_walls(x, y):
     return collides_with_walls_aabb(x, y, PLAYER_WIDTH, PLAYER_HEIGHT)
 
+# Μέθοδος για τον έλεγχο collision του εχθρού με βάση το δικό του hitbox
 def enemy_hits_walls(e, x, y):
     return collides_with_walls_aabb(x, y, e["hitbox_w"], e["hitbox_h"])
 
-def try_move_enemy(e, vx, vy):
-    """
-    Προσπαθεί να μετακινήσει enemy κατά (vx, vy) με axis-separated collision.
-    Επιστρέφει True αν κινήθηκε έστω λίγο.
-    """
+# Μέθοδος κίνησης εχθρού ξεχωριστά στους άξονες X, Y για καλύτερο έλεγχο collision και πιο ομαλή κίνηση
+def move_enemy(e, delta_x, delta_y):
     moved = False
-    ex, ey = e["x"], e["y"]
+    current_x, current_y = e["x"], e["y"]
 
-    # X axis
-    nx = ex + vx
+    # Κίνηση στον άξονα X
+    new_x = current_x + delta_x
 
-    # clamp X
-    w = e["hitbox_w"]; h = e["hitbox_h"]
-    nx = max(w/2, min(nx, MAP_WIDTH - w/2))
+    # Περιορισμός στον άξονα Χ ώστε να μείνει μέσα στα όρια του χάρτη
+    w = e["hitbox_w"]
+    h = e["hitbox_h"]
+    new_x = max(w/2, min(new_x, MAP_WIDTH - w/2))
 
-    if not enemy_hits_walls(e, nx, ey):
-        e["x"] = nx
-        moved = moved or (abs(vx) > 1e-6)
+    # Αν δεν υπάρχει collision, εφαρμόζουμε τη νέα θέση στον άξονα Χ
+    if not enemy_hits_walls(e, new_x, current_y):
+        e["x"] = new_x
+        moved = moved or (abs(delta_x) > 1e-6)
 
-    # Y axis
-    ny = ey + vy
+    # Κίνηση στον άξονα Y
+    new_y = current_y + delta_y
 
-    # clamp Y
-    ny = max(h/2, min(ny, MAP_HEIGHT - h/2))
+    # Περιορισμός στον άξονα Y ώστε να μείνει μέσα στα όρια του χάρτη
+    new_y = max(h/2, min(new_y, MAP_HEIGHT - h/2))
 
-    if not enemy_hits_walls(e, e["x"], ny):
-        e["y"] = ny
-        moved = moved or (abs(vy) > 1e-6)
+    # Αν δεν υπάρχει collision, εφαρμόζουμε τη νέα θέση στον άξονα Y
+    if not enemy_hits_walls(e, e["x"], new_y):
+        e["y"] = new_y
+        moved = moved or (abs(delta_y) > 1e-6)
 
     return moved
 
+# Μέθοδος που ελέγχει αν δύο ορθογώνια επικαλύπτονται, ώστε να ανιχνευθεί σύγκρουση
 def aabb_overlap(ax, ay, aw, ah, bx, by, bw, bh):
+    # Ελέγχει αν τα κέντρα των δύο ορθογωνίων είναι αρκετά κοντά ώστε τα hitbox τους να επικαλύπτονται σε X και Y
     return (abs(ax - bx) * 2 < (aw + bw)) and (abs(ay - by) * 2 < (ah + bh))
 
-def resolve_player_enemy_blocking(prev_players, prev_enemies):
-    """
-    Blocking collision:
-    Αν player και enemy overlap -> revert ΚΑΙ οι δύο στις προηγούμενες θέσεις τους.
-    Κανείς δεν σπρώχνει κανέναν.
-    """
+# Μέθοδος για την αποφυγή του "σπρωξίματος" μεταξύ παίκτη και εχθρού (δεν κινεί ο ένας τον άλλο)
+# Αν παίκτης και εχθρός επικαλυφθούν τότε και οι δύο επιστρέφουν στις προηγούμενες θέσεις τους
+def player_enemy_blocking(prev_players, prev_enemies):
     for pid, p in players.items():
+        # Προηγούμενη θέση παίκτη
         px0, py0 = prev_players.get(pid, (p["x"], p["y"]))
 
         for eid, e in enemies.items():
+            # Αγνοούμε νεκρούς εχθρούς
             if e.get("dead"):
                 continue
 
+            # Προηγούμενη θέση enemy
             ex0, ey0 = prev_enemies.get(eid, (e["x"], e["y"]))
 
+            # Αν υπάρχει overlap, επαναφέρουμε και τους δύο
             if aabb_overlap(
                 p["x"], p["y"], PLAYER_WIDTH, PLAYER_HEIGHT,
                 e["x"], e["y"], e["hitbox_w"], e["hitbox_h"]
             ):
-                # revert BOTH
                 p["x"], p["y"] = px0, py0
                 e["x"], e["y"] = ex0, ey0
 
+# Μέθοδος που υπολογίζει την ευκλείδεια απόσταση μεταξύ δύο σημείων
 def dist(ax, ay, bx, by):
     return math.hypot(ax - bx, ay - by)
 
+# Μέθοδος που μετατρέπει ένα διάνυσμα (dx, dy) σε κατεύθυνση για animation / state
 def dir_from_delta(dx, dy):
     if abs(dx) > abs(dy):
         return "right" if dx > 0 else "left"
     else:
         return "up" if dy > 0 else "down"
 
-def move_towards_enemy(e, tx, ty):
-    ex, ey = e["x"], e["y"]
-    dx = tx - ex
-    dy = ty - ey
-    d = math.hypot(dx, dy)
+# Μέθοδος που υπολογίζει την κατεύθυνση του εχθρού προς τον στόχο και καλεί τη μέθοδο κίνησης
+def move_enemy_towards_target(e, target_x, target_y):
+    current_x, current_y = e["x"], e["y"]
+    dx = target_x - current_x
+    dy = target_y - current_y
+
+    # Ευκλείδεια απόσταση
+    d = dist(current_x, current_y, target_x, target_y)
+
+    # Αν η απόσταση είναι σχεδόν μηδενική, σταματάει η κίνηση
     if d < 0.001:
         return
 
-    nx = dx / d
-    ny = dy / d
+    # Κανονικοποιημένο διάνυσμα κατεύθυνσης προς τον στόχο
+    dir_x = dx / d
+    dir_y = dy / d
 
-    speed = e["move_speed"]  # px per tick
+    # Ταχύτητα enemy σε pixels ανά tick
+    speed = e["move_speed"] 
 
     now = time.time()
 
-    # Αν είμαστε σε unstuck mode, κινήσου ΠΛΑΓΙΑ (perpendicular) αντί για ευθεία
+    # Αν ο εχθρός είναι σε unstuck mode, κινείται πλάγια αντί για ευθεία προς τον στόχο
     if now < e.get("unstuck_until", 0.0):
-        side = e.get("unstuck_side", 1)  # 1 ή -1
-        # perpendicular vector: ( -ny, nx ) ή ( ny, -nx )
-        px = -ny * side
-        py =  nx * side
+        side = e.get("unstuck_side", 1)
 
-        try_move_enemy(e, px * speed, py * speed)
+        # Κάθετο διάνυσμα στην κατεύθυνση προς τον στόχο
+        px = -dir_y * side
+        py =  dir_x * side
+
+        move_enemy(e, px * speed, py * speed)
         e["dir"] = dir_from_delta(px, py)
         return
 
-    # Κανονική κίνηση: δοκιμάζει 3 επιλογές (ευθεία -> μόνο X -> μόνο Y)
+    # Κίνηση: δοκιμάζει 3 επιλογές (ευθεία, μόνο άξονα X, μόνο άξονα Y)
     moved = False
 
-    # 1) full vector
-    moved = try_move_enemy(e, nx * speed, ny * speed)
+    # Προσπάθεια πλήρους διαγώνιας / ευθείας κίνησης
+    moved = move_enemy(e, dir_x * speed, dir_y * speed)
 
-    # 2) αν δεν μπόρεσε, προσπάθησε μόνο X
+    # Αν απέτυχε, δοκιμή μόνο στον άξονα X
     if not moved:
-        moved = try_move_enemy(e, nx * speed, 0)
+        moved = move_enemy(e, dir_x * speed, 0)
 
-    # 3) αν δεν μπόρεσε, προσπάθησε μόνο Y
+    # Αν απέτυχε και πάλι, δοκιμή μόνο στον άξονα Y
     if not moved:
-        moved = try_move_enemy(e, 0, ny * speed)
+        moved = move_enemy(e, 0, dir_y * speed)
 
-    # direction για animation
+    # Ενημέρωση direction για animation
     e["dir"] = dir_from_delta(dx, dy)
 
-def choose_unstuck_side_towards_target(e, tx, ty):
-    """
-    Διαλέγει unstuck_side = 1 ή -1 με βάση ποια πλευρική κίνηση (perpendicular)
-    φέρνει το enemy πιο κοντά στον στόχο (tx, ty), με σεβασμό σε walls+clamp.
-    """
-    ex0, ey0 = e["x"], e["y"]
-    dx = tx - ex0
-    dy = ty - ey0
-    d = math.hypot(dx, dy)
+# Επιλέγει ποια πλάγια κατεύθυνση unstuck (1 ή -1) φέρνει τον εχθρό πιο κοντά στον στόχο
+def choose_unstuck_side_towards_target(e, target_x, target_y):
+    current_x, current_y = e["x"], e["y"]
+    dx = target_x - current_x
+    dy = target_y - current_y
+
+    # Ευκλείδεια απόσταση
+    d = dist(current_x, current_y, target_x, target_y)
+
+    # Αν εχθρός και στόχος είναι σχεδόν στο ίδιο σημείο, κρατάμε την προεπιλεγμένη τιμή
     if d < 1e-6:
         return 1
 
-    nx = dx / d
-    ny = dy / d
+    # Κανονικοποιημένο διάνυσμα προς τον στόχο
+    dir_x = dx / d
+    dir_y = dy / d
     speed = e["move_speed"]
 
-    # δοκιμάζουμε τα 2 perpendicular:
-    # side=1 => (-ny, nx)
-    # side=-1 => (ny, -nx)
+    # Δοκιμή πλάγιας κίνησης με πλευρά 1
+    # Δημιουργούμε ένα προσωρινό αντίγραφο του εχθρού, ώστε να ελέγξουμε πού θα κατέληγε αν κινούνταν προς τη μία κάθετη κατεύθυνση
+    tmp1 = {"x": current_x, "y": current_y, "hitbox_w": e["hitbox_w"], "hitbox_h": e["hitbox_h"]}
+    tmp1.update(e)  # Αντιγράφουμε και τα υπόλοιπα στοιχεία που χρειάζονται για collision / movement
 
-    # --- simulate side=1 ---
-    tmp1 = {"x": ex0, "y": ey0, "hitbox_w": e["hitbox_w"], "hitbox_h": e["hitbox_h"]}
-    tmp1.update(e)  # για να έχει ό,τι χρειάζεται enemy_hits_walls
-    x1, y1 = ex0, ey0
-    try_move_enemy(tmp1, (-ny) * speed, (nx) * speed)
+    # Δοκιμαστική μετακίνηση στην πρώτη πλάγια κατεύθυνση
+    move_enemy(tmp1, (-dir_y) * speed, (dir_x) * speed)
+
+    # Παίρνουμε τη νέα δοκιμαστική θέση
     x1, y1 = tmp1["x"], tmp1["y"]
-    d1 = math.hypot(tx - x1, ty - y1)
 
-    # --- simulate side=-1 ---
-    tmp2 = {"x": ex0, "y": ey0, "hitbox_w": e["hitbox_w"], "hitbox_h": e["hitbox_h"]}
+    # Υπολογίζουμε την απόσταση από τον στόχο μετά από αυτή τη δοκιμή
+    d1 = dist(target_x, target_y, x1, y1)
+
+    # Δοκιμή πλάγιας κίνησης με πλευρά -1
+    # Δημιουργούμε δεύτερο προσωρινό αντίγραφο του εχθρού, ώστε να ελέγξουμε την αντίθετη κάθετη κατεύθυνση
+    tmp2 = {"x": current_x, "y": current_y, "hitbox_w": e["hitbox_w"], "hitbox_h": e["hitbox_h"]}
     tmp2.update(e)
-    try_move_enemy(tmp2, (ny) * speed, (-nx) * speed)
-    x2, y2 = tmp2["x"], tmp2["y"]
-    d2 = math.hypot(tx - x2, ty - y2)
 
-    # διάλεξε την πλευρά που μειώνει περισσότερο την απόσταση
+    # Δοκιμαστική μετακίνηση στη δεύτερη πλάγια κατεύθυνση
+    move_enemy(tmp2, (dir_y) * speed, (-dir_x) * speed)
+
+    # Παίρνουμε τη νέα δοκιμαστική θέση
+    x2, y2 = tmp2["x"], tmp2["y"]
+
+    # Υπολογίζουμε την απόσταση από τον στόχο μετά από αυτή τη δοκιμή
+    d2 = dist(target_x, target_y, x2, y2)
+
+    # Επιλέγουμε την πλευρά που μικραίνει περισσότερο την απόσταση από τον στόχο
     return 1 if d1 <= d2 else -1
 
+# Μέθοδος που ενημερώνει τη συμπεριφορά και την κίνηση όλων των εχθρών
 def update_enemy_ai_and_movement():
     for eid, e in enemies.items():
+        # Παραλείπουμε νεκρούς εχθρούς
         if e.get("dead"):
             continue
 
-        # find nearest player
+        # Εύρεση κοντινότερου ζωντανού παίκτη
         nearest_pid = None
-        nearest_d = 1e9
+        nearest_d = 1e9  # Αρχικοποίηση με πολύ μεγάλη τιμή απόστασης, ώστε να βρεθεί ο κοντινότερος παίκτης
+
         for pid, p in players.items():
             if p.get("dead", False):
                 continue
@@ -392,175 +468,204 @@ def update_enemy_ai_and_movement():
                 nearest_d = d
                 nearest_pid = pid
 
-        # acquire target
+        # Αν δεν έχει ήδη στόχο, στοχεύει τον κοντινότερο παίκτη αν είναι μέσα στο aggro radius
         if e["target"] is None:
             if nearest_pid is not None and nearest_d <= e["aggro_radius"]:
                 e["target"] = nearest_pid
 
-        # lose target
+        # Απώλεια στόχου
         if e["target"] is not None:
             tp = players.get(e["target"])
+
+            # Αν ο στόχος δεν υπάρχει πια ή είναι νεκρός, τον αφήνει
             if tp is None or tp.get("dead", False):
                 e["target"] = None
             else:
                 d = dist(e["x"], e["y"], tp["x"], tp["y"])
+
+                # Αν ο στόχος απομακρύνθηκε πολύ, σταματά το κυνήγι
                 if d > e["lose_radius"]:
                     e["target"] = None
 
-        # act
+        # Συμπεριφορά εχθρού
         if e["target"] is not None:
             tp = players[e["target"]]
             d = dist(e["x"], e["y"], tp["x"], tp["y"])
 
+            # Αν ο στόχος είναι εντός attack range, ο εχθρός επιτίθεται
             if d <= e["attack_range"]:
                 e["state"] = "attack"
                 e["dir"] = dir_from_delta(tp["x"] - e["x"], tp["y"] - e["y"])
-                e["unstuck_until"] = 0.0    # reset
+                e["unstuck_until"] = 0.0    # Επαναφορά unstuck mode
+            
+            # Αλλιώς κινείται προς τον στόχο
             else:
                 e["state"] = "walk"
-                move_towards_enemy(e, tp["x"], tp["y"])
+                move_enemy_towards_target(e, tp["x"], tp["y"])
         else:
-            # return to spawn
+             # Αν δεν υπάρχει στόχος, ο εχθρός επιστρέφει στο αρχικό spawn point
             sx, sy = e["spawn_x"], e["spawn_y"]
             d = dist(e["x"], e["y"], sx, sy)
+
+            # Αν έφτασε κοντά στο spawn, μένει σε idle state
             if d <= 2.0:
                 e["state"] = "idle"
-                e["unstuck_until"] = 0.0    # reset
+                e["unstuck_until"] = 0.0    # Επαναφορά unstuck mode
             else:
                 e["state"] = "walk"
-                move_towards_enemy(e, sx, sy)
+                move_enemy_towards_target(e, sx, sy)
 
-        # --- anti-stuck detector ---
+        # Έλεγχος αν ο εχθρός έχει κολλήσει
         lx = e.get("last_x", e["x"])
         ly = e.get("last_y", e["y"])
 
-        moved_dist = math.hypot(e["x"] - lx, e["y"] - ly)
+        # Υπολογισμός πραγματικής μετακίνησης από το προηγούμενο tick
+        moved_dist = dist(e["x"], e["y"], lx, ly)
 
+        # Αν κινείται ("walk state") αλλά δεν προχωρά αρκετά, μετράμε stuck time
         if moved_dist < MIN_PROGRESS_PX and e["state"] == "walk":
             e["stuck_time"] = e.get("stuck_time", 0.0) + TICK_DT
         else:
             e["stuck_time"] = 0.0
 
+        # Αποθήκευση τρέχουσας θέσης για το επόμενο tick
         e["last_x"] = e["x"]
         e["last_y"] = e["y"]
 
-        # Αν stuck για 1s -> μπες σε unstuck mode
+        # Αν μείνει stuck για αρκετό χρόνο, ενεργοποιούμε unstuck mode
         if e["stuck_time"] >= STUCK_THRESHOLD:
             e["stuck_time"] = 0.0
             e["unstuck_until"] = time.time() + UNSTUCK_DURATION
 
-            # στόχος: player αν υπάρχει, αλλιώς spawn
+            # Αν έχει target, ξεκολλάει προς εκείνον
             if e.get("target") is not None and e["target"] in players:
                 tx = players[e["target"]]["x"]
                 ty = players[e["target"]]["y"]
+            
+            # Αλλιώς ξεκολλάει προς το spawn point του
             else:
                 tx = e["spawn_x"]
                 ty = e["spawn_y"]
 
-            # διάλεξε πλευρά που ΠΛΗΣΙΑΖΕΙ τον στόχο (όχι random/hash)
+            # Επιλέγουμε την πλάγια κατεύθυνση που τον φέρνει πιο κοντά στον στόχο
             e["unstuck_side"] = choose_unstuck_side_towards_target(e, tx, ty)
 
+# Μέθοδος που εφαρμόζει τις επιθέσεις των εχθρών στους παίκτες
 def apply_enemy_attacks():
     now = time.time()
 
     for eid, e in enemies.items():
+        # Αγνοούμε νεκρούς εχθρούς ή εχθρούς χωρίς στόχο
         if e.get("dead") or e["target"] is None:
             continue
 
+        # Αν ο εχθρός δεν είναι πλέον σε attack state, ακυρώνουμε τυχόν pending hit
         if e["state"] != "attack":
-            # αν βγήκε από attack state, καθάρισε pending
             e["pending_hit_time"] = 0.0
             continue
 
         tp = players.get(e["target"])
+
+        # Αν ο στόχος δεν υπάρχει ή πέθανε, καθαρίζουμε στόχο και pending attack
         if tp is None or tp.get("dead", False):
             e["target"] = None
             e["pending_hit_time"] = 0.0
             continue
 
-        # αν δεν είναι πια σε range, cancel
+        # Αν ο παίκτης βγήκε εκτός range, ακυρώνεται το attack
         d = dist(e["x"], e["y"], tp["x"], tp["y"])
         if d > e["attack_range"]:
             e["pending_hit_time"] = 0.0
             continue
 
-        # cooldown check
+        # Έλεγχος επαναφόρτισης (cooldown)
         if now < e["next_attack_time"]:
             continue
 
-        # αν δεν έχει ξεκινήσει αυτό το attack, όρισε hit time
+        # Αν ξεκινά τώρα το attack, ορίζουμε πότε θα γίνει το πραγματικό hit
         if e["pending_hit_time"] <= 0.0:
             e["pending_hit_time"] = now + e["windup"]
-            # κλείδωσε cooldown από τώρα (ώστε να μη spam-άρει starts)
+
+            # Το cooldown ξεκινάει από τώρα για να μην ξεκινά πολλές επιθέσεις μαζί
             e["next_attack_time"] = now + e["attack_cooldown"]
             continue
 
-        # αν ήρθε η ώρα για hit
+        # Αν ήρθε η στιγμή του hit
         if now >= e["pending_hit_time"]:
             e["pending_hit_time"] = 0.0
 
-            # τελικό check ότι είναι ακόμα κοντά
+            # Τελικός έλεγχος ότι ο παίκτης είναι ακόμα εντός εμβέλειας
             d2 = dist(e["x"], e["y"], tp["x"], tp["y"])
             if d2 <= e["attack_range"]:
-                # player resist για τώρα 0 αν δεν έχεις
+                # Υπολογισμός τελικής ζημιάς μετά το resist του παίκτη
                 player_resist = tp.get("resist", 0)
                 dmg = max(0, e["damage"] - player_resist)
 
-                # Εσύ έχεις hp 0..1 τώρα. Για combat καλύτερα να πας σε real hp,
-                # αλλά προσωρινά μπορούμε να το μεταφράσουμε:
-                # π.χ. αν player έχει max 100:
+                # Το hp αποθηκεύεται και ως normalized (0..1) και ως τρέχον hp
                 player_hp_max = tp.get("hp_max", 100)
-                # αν tp["hp"] είναι normalized, φτιάξε current:
                 hp_cur = tp.get("hp_cur", tp["hp"] * player_hp_max)
 
+                # Εφαρμογή damage
                 hp_cur -= dmg
                 if hp_cur < 0:
                     hp_cur = 0
 
+                # Ενημέρωση τιμών ζωής
                 tp["hp_cur"] = hp_cur
                 tp["hp_max"] = player_hp_max
                 tp["hp"] = hp_cur / player_hp_max
 
+                # Αν ο παίκτης πέθανε, αλλάζουμε state
                 if hp_cur <= 0:
                     tp["dead"] = True
                     tp["state"] = "death"
                 else:
+                    # Διαφορετικά αυξάνουμε hurt sequence για animation
+                    # Θέλουμε νέο animation όταν τελειώσει το προηγούμενο και όχι ενδιάμεσα να γίνεται reset
                     tp["hurt_seq"] = tp.get("hurt_seq", 0) + 1
 
+# Μέθοδος που εφαρμόζει τις επιθέσεις των παικτών πάνω στους εχθρούς
 def apply_player_attacks():
     now = time.time()
 
     for pid, p in players.items():
+        # Αγνοούμε νεκρούς παίκτες
         if p.get("dead", False):
             continue
 
+        # Αν ο παίκτης δεν πάτησε πλήκτρο για επίθεση, πάμε στον επόμενο
         if not p.get("attack_requested", False):
             continue
 
-        p["attack_requested"] = False
+        p["attack_requested"] = False   # Θέτουμε το αίτημα επίθεσης σε false μετά την επίθεση
 
+        # Έλεγχος επαναφόρτισης (cooldown)
         if now < p.get("next_attack_time", 0.0):
             continue
 
+        # Ορισμός επόμενου διαθέσιμου attack time
         p["next_attack_time"] = now + p.get("attack_cooldown", 0.45)
 
         attack_dir = p.get("attack_dir", "down")
         px = p["x"]
         py = p["y"]
 
+        # Μέγιστη απόσταση επίθεσης παίκτη
         attack_range = 70
 
+        # Θα επιλεγεί ο κοντινότερος enemy που είναι μπροστά από τον παίκτη
         target_eid = None
         best_dist = 999999
 
         for eid, e in enemies.items():
+            # Αγνοούμε νεκρούς εχθρούς
             if e.get("dead", False):
                 continue
 
             dx = e["x"] - px
             dy = e["y"] - py
 
-            # directional filter
+            # Ο παίκτης χτυπά μόνο προς τη μεριά που κοιτάζει
             if attack_dir == "up" and dy <= 0:
                 continue
             if attack_dir == "down" and dy >= 0:
@@ -570,79 +675,106 @@ def apply_player_attacks():
             if attack_dir == "right" and dx <= 0:
                 continue
 
+            # Έλεγχος απόστασης
             d = dist(px, py, e["x"], e["y"])
             if d > attack_range:
                 continue
 
+            # Επιλέγουμε τον κοντινότερο έγκυρο στόχο
             if d < best_dist:
                 best_dist = d
                 target_eid = eid
 
+        # Αν δεν βρέθηκε στόχος, δεν γίνεται hit
         if target_eid is None:
             continue
 
         e = enemies[target_eid]
 
+        # Υπολογισμός damage μετά το resist του εχθρού
         dmg = max(0, p.get("damage", 35) - e.get("resist", 0))
         e["hp"] -= dmg
 
+        # Αν ο enemy πεθάνει
         if e["hp"] <= 0:
             e["hp"] = 0
             e["dead"] = True
             e["state"] = "death"
         else:
+            # Διαφορετικά αυξάνουμε hurt sequence για animation
             e["hurt_seq"] = e.get("hurt_seq", 0) + 1
 
-# Μέθοδος για τα inputs
+# Μέθοδος που λαμβάνει και επεξεργάζεται τα inputs των παικτών
 async def handle_inputs():
     while True:
+        # Περιμένει μήνυμα input από κάποιον client
         msg = await pull_socket.recv_json()
         pid = msg["id"]
 
+        # Αν ο παίκτης δεν υπάρχει πια, αγνοούμε το μήνυμα
         if pid not in players:
             continue
 
-        # movement
+        # Input κίνησης
         if "move" in msg:
             direction = msg.get("move", "STOP")
 
+            # Αν η κατεύθυνση δεν είναι έγκυρη, χρησιμοποιούμε STOP
             if direction not in ("UP", "DOWN", "LEFT", "RIGHT", "STOP"):
                 direction = "STOP"
 
+            # Αν ο παίκτης δεν είναι νεκρός, αποθηκεύουμε τη νέα κατεύθυνση κίνησης
             if not players[pid].get("dead", False):
                 players[pid]["move_dir"] = direction
 
-        # attack
+        # Input επίθεσης
         if msg.get("attack"):
+            # Αν είναι νεκρός δεν μπορεί να επιτεθεί
             if players[pid].get("dead", False):
                 continue
 
+            # Κατεύθυνση επίθεσης
             adir = msg.get("dir", "DOWN")
+
+            # Αν η κατεύθυνση δεν είναι έγκυρη, χρησιμοποιούμε DOWN
             if adir not in ("UP", "DOWN", "LEFT", "RIGHT"):
                 adir = "DOWN"
 
-            players[pid]["attack_requested"] = True
-            players[pid]["attack_dir"] = adir.lower()    
+            # Αν ο παίκτης κινείται, χρησιμοποιούμε walk_attack, αλλιώς attack
+            move_dir = players[pid].get("move_dir", "STOP")
+            attack_state = "walk_attack" if move_dir != "STOP" else "attack"
 
-# Μέθοδος για τη μετάδοση κατάστασης παιχνιδιού
+            players[pid]["attack_requested"] = True     # Καταγράφουμε ότι ζητήθηκε επίθεση
+            players[pid]["attack_dir"] = adir.lower()   # Αποθηκεύουμε την κατεύθυνση επίθεσης σε lowercase για το animation/state   
+            players[pid]["dir"] = adir.lower()
+
+            players[pid]["state"] = attack_state        # Ενημέρωση κατάστασης animation επίθεσης
+            players[pid]["attack_state"] = attack_state
+
+            players[pid]["attack_anim_until"] = time.time() + 0.45  # Χρόνος μέχρι τον οποίο θα διαρκεί το attack animation
+
+# Μέθοδος που ενημερώνει και μεταδίδει συνεχώς την κατάσταση του παιχνιδιού
 async def broadcast_state():
     while True:
         global tick
-        tick += 1       # Αύξηση του tick για κάθε frame
+        tick += 1       # Αύξηση του tick για κάθε frame / update
 
-        elapsed_time = time.time() - server_start_time
+        elapsed_time = time.time() - server_start_time  # Χρόνος που έχει περάσει από την εκκίνηση του server
 
+        # Αποθήκευση προηγούμενων θέσεων παικτών και εχθρών, ώστε να μπορούν να χρησιμοποιηθούν σε collision correction
         prev_players = {pid: (p["x"], p["y"]) for pid, p in players.items()}
         prev_enemies = {eid: (e["x"], e["y"]) for eid, e in enemies.items()}
 
+        # Ενημέρωση κίνησης παικτών
         for pid, p in players.items():
+            # Αν ο παίκτης είναι νεκρός, σταματάει να κινείται
             if p.get("dead", False):
                 p["move_dir"] = "STOP"
                 continue
 
             direction = p.get("move_dir", "STOP")
 
-            # Κίνηση του παίκτη με βάση την εισερχόμενη εντολή
+            # Αρχικά θεωρούμε ως νέα θέση την τρέχουσα
             new_x = p["x"]
             new_y = p["y"]
 
@@ -660,58 +792,67 @@ async def broadcast_state():
             new_x = max(PLAYER_WIDTH / 2, min(new_x, MAP_WIDTH - PLAYER_WIDTH / 2))
             new_y = max(PLAYER_HEIGHT / 2, min(new_y, MAP_HEIGHT - PLAYER_HEIGHT / 2))
 
-            # Έλεγχος collision
+            # Έλεγχος collision ξεχωριστά για X και Y
             if not player_hits_walls(new_x, p["y"]):
                 p["x"] = new_x
 
             if not player_hits_walls(p["x"], new_y):
                 p["y"] = new_y
 
-            # visual state/direction
+            # Ενημέρωση visual state / direction
             if not p.get("dead", False):
-                if direction == "UP":
-                    p["dir"] = "up"
-                    p["state"] = "walk"
-                elif direction == "DOWN":
-                    p["dir"] = "down"
-                    p["state"] = "walk"
-                elif direction == "LEFT":
-                    p["dir"] = "left"
-                    p["state"] = "walk"
-                elif direction == "RIGHT":
-                    p["dir"] = "right"
-                    p["state"] = "walk"
+                now = time.time()
+
+                # Όσο διαρκεί το attack animation, δεν αλλάζουμε state / direction από την κίνηση
+                if now < p.get("attack_anim_until", 0.0):
+                    p["dir"] = p.get("attack_dir", p.get("dir", "down"))
+                    p["state"] = p.get("attack_state", "attack")
                 else:
-                    p["state"] = "idle"
+                    # Αν δεν παίζει attack animation, το state εξαρτάται από την κίνηση
+                    if direction == "UP":
+                        p["dir"] = "up"
+                        p["state"] = "walk"
+                    elif direction == "DOWN":
+                        p["dir"] = "down"
+                        p["state"] = "walk"
+                    elif direction == "LEFT":
+                        p["dir"] = "left"
+                        p["state"] = "walk"
+                    elif direction == "RIGHT":
+                        p["dir"] = "right"
+                        p["state"] = "walk"
+                    else:
+                        p["state"] = "idle"
 
-        # 1) enemy AI + movement
-        update_enemy_ai_and_movement()
+        # Κλήση μεθόδων για ενημέρωση συμπεριφοράς, συγκρούσεων και επιθέσεων παικτών και εχθρών
 
-        # 2) collisions between entities (ώστε να μην περνάνε μέσα)
-        resolve_player_enemy_blocking(prev_players, prev_enemies)
+        update_enemy_ai_and_movement()  # Ενημέρωση και κίνησης εχθρών
 
-        # 3) enemy attacks (damage to players)
-        apply_enemy_attacks()
+        player_enemy_blocking(prev_players, prev_enemies)   # Συγκρούση παικτών/εχθρών ώστε να μην περνάνε ο ένας μέσα από τον άλλο
 
-        apply_player_attacks()
+        apply_enemy_attacks()   # Επιθέσεις εχθρών
+
+        apply_player_attacks()  # Επιθέσεις παικτών
 
         # Στέλνει την κατάσταση του παιχνιδιού σε όλους τους πελάτες
         await pub_socket.send_json({
             "tick": tick,
             "tick_dt": TICK_DT,             # Διάρκεια κάθε "tick"
-            "players": dict(players),             # Κατάσταση των παικτών
-            "enemies": dict(enemies),
+            "players": dict(players),       # Τρέχουσα κατάσταση παικτών
+            "enemies": dict(enemies),       # Τρέχουσα κατάσταση εχθρών
             "elapsed_time": elapsed_time    # Χρόνος που έχει περάσει από την έναρξη
         })
 
+        # Παύση μέχρι το επόμενο tick
         await asyncio.sleep(TICK_DT)  # 50 FPS, ρυθμός ανανέωσης 20ms
 
+# Main ασύγχρονη μέθοδος του server
 async def main():
     await asyncio.gather(
         handle_control(),       # Επεξεργασία αιτημάτων σύνδεσης/αποσύνδεσης
         handle_inputs(),        # Επεξεργασία των κινήσεων των παικτών
-        broadcast_state()       # Μετάδοση της κατάστασης του παιχνιδιού
+        broadcast_state()       # Ενημέρωση και μετάδοση της κατάστασης του παιχνιδιού
     )
-
+# Εκκίνηση του asyncio server
 if __name__ == "__main__":
     asyncio.run(main())
