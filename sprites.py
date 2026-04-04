@@ -20,7 +20,7 @@ WALK_ATTACK = "walk_attack"
 
 ENEMY_TYPES = {
 
-    "orc1": {
+    "orc": {
         # Core stats
         "hp_max": 120,
         "damage": 15,
@@ -41,6 +41,11 @@ ENEMY_TYPES = {
         "windup": 0.45,        # seconds μέχρι να γίνει το hit
     },
 }
+
+def get_enemy_type_defs(enemy_type: str):
+    if enemy_type not in ENEMY_TYPES:
+        raise ValueError(f"Unknown enemy type: {enemy_type}")
+    return ENEMY_TYPES[enemy_type]
 
 def sheet_grid(path, columns, count):
     sheet = arcade.SpriteSheet(path)
@@ -69,8 +74,8 @@ def load_warrior_animations():
         WALK_ATTACK:{DOWN: watk[0:6], LEFT: watk[6:12], RIGHT: watk[12:18], UP: watk[18:24]},
     }
 
-def load_enemy_animations(enemy_name="orc1"):
-    base = f"assets/enemies/{enemy_name}_"
+def load_enemy_animations(enemy_type="orc"):
+    base = f"assets/enemies/{enemy_type}_"
     idle = sheet_grid(base+"idle.png", 4, 16)
     walk = sheet_grid(base+"walk.png", 6, 24)
     hurt = sheet_grid(base+"hurt.png", 6, 24)
@@ -322,8 +327,10 @@ class PlayerSprite(arcade.Sprite):
             self.texture = frames[self.cur_frame]
 
 class EnemySprite(arcade.Sprite):
-    def __init__(self, animations):
+    def __init__(self, enemy_type, animations):
         super().__init__(scale=SCALE)
+
+        self.enemy_type = enemy_type
 
         self.dead = False
         self.despawn = False
@@ -331,7 +338,7 @@ class EnemySprite(arcade.Sprite):
         # Οπτικό UI Εχθρών
         self.hp = 1.0
         self.hp_max = 1.0
-        self.nickname = "Orc"
+        self.nickname = enemy_type
 
         self.nickname_text = arcade.Text("", 0, 0, arcade.color.WHITE, 12, anchor_x="center")
 

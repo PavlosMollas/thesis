@@ -183,7 +183,7 @@ class MyGame(arcade.View):
         self.actor_list = arcade.SpriteList()   # Λίστα με όλα τα sprites που σχεδιάζονται
 
         self.enemy_list = arcade.SpriteList()   # Λίστα με τα sprites των εχθρών
-        self.enemy_animations = None
+        self.enemy_animation_dict = {}          # Λεξικό για animation ανά είδος εχθρού
 
         self.attack_buffered = False
         self.attack_buffer_threshold = 0.70  # τελευταίο 30% του attack επιτρέπει buffer
@@ -401,9 +401,6 @@ class MyGame(arcade.View):
         # Προσθήκη player
         self.actor_list.append(self.player_sprite)
 
-        if not hasattr(self, "enemy_animations") or self.enemy_animations is None:
-            self.enemy_animations = load_enemy_animations()
-
         # Τοποθέτηση timer στο UI
         self.timer_text.x = 10
         self.timer_text.y = self.window.height - 30
@@ -561,6 +558,7 @@ class MyGame(arcade.View):
         for eid, epos in enemies_state.items():
             ex = epos["x"]
             ey = epos["y"]
+            etype = epos.get("type", "orc")
             estate = epos.get("state", IDLE)
             edir = epos.get("dir", DOWN)
             hp = epos.get("hp", 1.0)
@@ -570,10 +568,10 @@ class MyGame(arcade.View):
 
             # create if missing
             if eid not in self.enemy_sprites:
-                if self.enemy_animations is None:
-                    self.enemy_animations = load_enemy_animations()
+                if etype not in self.enemy_animation_dict:
+                    self.enemy_animation_dict[etype] = load_enemy_animations(etype)
 
-                espr = EnemySprite(self.enemy_animations)
+                espr = EnemySprite(etype, self.enemy_animation_dict[etype])
                 self.enemy_sprites[eid] = espr
                 self.enemy_list.append(espr)
                 self.actor_list.append(espr)   # για depth sort μαζί με όλους
@@ -585,6 +583,7 @@ class MyGame(arcade.View):
             espr.center_y = ey
             espr.hp = hp
             espr.hp_max = hp_max
+            espr.nickname = etype
 
             # state/dir
             espr.set_base_state(estate, edir)

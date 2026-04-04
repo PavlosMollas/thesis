@@ -4,7 +4,7 @@ import zmq.asyncio
 import sys
 import time
 import arcade
-from sprites import ENEMY_TYPES
+from sprites import get_enemy_type_defs
 import math
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
@@ -65,6 +65,8 @@ enemy_spawns = []     # Λίστα για το spawn εχθρών
 
 next_spawn_index = 0  # Δείκτης για κυκλική επιλογή επόμενου spawn point παίκτη
 
+enemy_spawn_counter = 0
+
 object_layer = tile_map.object_lists.get("Object")  # Παίρνουμε το object layer για το spawn από το TMX, όπου έχουμε ορίσει σημεία spawn μέσα από το Tiled
 
 if not object_layer:
@@ -76,10 +78,15 @@ for obj in object_layer:
         x, y = obj.shape
         spawn_points.append((x, y))
     
-    # Αν το object ξεκινά με "orc", το θεωρούμε enemy spawn
-    elif obj.name and obj.name.startswith("orc"):
+    enemy_type = None
+    if hasattr(obj, "properties") and obj.properties:
+        enemy_type = obj.properties.get("enemy_type")
+
+    if enemy_type:
         x, y = obj.shape
-        enemy_spawns.append((obj.name, x, y))
+        enemy_id = f"enemy_{enemy_spawn_counter}"
+        enemy_spawn_counter += 1
+        enemy_spawns.append((enemy_id, enemy_type, x, y))
 
 # Πρέπει να υπάρχει τουλάχιστον ένα spawn point για παίκτες
 if not spawn_points:
@@ -89,15 +96,14 @@ print("Spawn points loaded from TMX:", spawn_points)    # Εκτύπωση ση�
 print("Enemy spawns:", enemy_spawns)
 
 # Φόρτωση εχθρών από το spawn του tiled
-for (name, x, y) in enemy_spawns:
+for (enemy_id, enemy_type, x, y) in enemy_spawns:
 
-    etype = name   # Ο τύπος του εχθρού προκύπτει από το όνομα του object στο map
-    defs = ENEMY_TYPES[etype]
+    defs = get_enemy_type_defs(enemy_type)
 
-    enemies[name] = {
+    enemies[enemy_id] = {
 
         # Είδος εχθρού
-        "type": etype,
+        "type": enemy_type,
 
         # Τρέχουσα θέση και αρχική θέση spawn
         "x": x,
@@ -319,7 +325,7 @@ def aabb_overlap(ax, ay, aw, ah, bx, by, bw, bh):
 def player_enemy_blocking(prev_players, prev_enemies):
     for pid, p in players.items():
         # Προηγούμενη θέση παίκτη
-        px0, py0 = prev_players.get(pid, (p["x"], p["y"]))
+        prev_player_x, prev_player_y = prev_players.get(pid, (p["x"], p["y"]))
 
         for eid, e in enemies.items():
             # Αγνοούμε νεκρούς εχθρούς
@@ -327,15 +333,15 @@ def player_enemy_blocking(prev_players, prev_enemies):
                 continue
 
             # Προηγούμενη θέση enemy
-            ex0, ey0 = prev_enemies.get(eid, (e["x"], e["y"]))
+            prev_enemy_x, prev_enemy_y = prev_enemies.get(eid, (e["x"], e["y"]))
 
             # Αν υπάρχει overlap, επαναφέρουμε και τους δύο
             if aabb_overlap(
                 p["x"], p["y"], PLAYER_WIDTH, PLAYER_HEIGHT,
                 e["x"], e["y"], e["hitbox_w"], e["hitbox_h"]
             ):
-                p["x"], p["y"] = px0, py0
-                e["x"], e["y"] = ex0, ey0
+                p["x"], p["y"] = prev_player_x, prev_player_y
+                e["x"], e["y"] = prev_enemy_x, prev_enemy_y
 
 # Μέθοδος που υπολογίζει την ευκλείδεια απόσταση μεταξύ δύο σημείων
 def dist(ax, ay, bx, by):
@@ -449,8 +455,8 @@ def choose_unstuck_side_towards_target(e, target_x, target_y):
     return 1 if d1 <= d2 else -1
 
 # Μέθοδος που ενημερώνει τη συμπεριφορά και την κίνηση όλων των εχθρών
-def update_enemy_ai_and_movement():
-    for eid, e in enemies.items():
+def update_enemy_chase_and_movement():
+    for e in enemies.values():
         # Παραλείπουμε νεκρούς εχθρούς
         if e.get("dead"):
             continue
@@ -554,7 +560,7 @@ def update_enemy_ai_and_movement():
 def apply_enemy_attacks():
     now = time.time()
 
-    for eid, e in enemies.items():
+    for e in enemies.values():
         # Αγνοούμε νεκρούς εχθρούς ή εχθρούς χωρίς στόχο
         if e.get("dead") or e["target"] is None:
             continue
@@ -628,7 +634,7 @@ def apply_enemy_attacks():
 def apply_player_attacks():
     now = time.time()
 
-    for pid, p in players.items():
+    for p in players.values():
         # Αγνοούμε νεκρούς παίκτες
         if p.get("dead", False):
             continue
@@ -766,7 +772,7 @@ async def broadcast_state():
         prev_enemies = {eid: (e["x"], e["y"]) for eid, e in enemies.items()}
 
         # Ενημέρωση κίνησης παικτών
-        for pid, p in players.items():
+        for p in players.values():
             # Αν ο παίκτης είναι νεκρός, σταματάει να κινείται
             if p.get("dead", False):
                 p["move_dir"] = "STOP"
@@ -826,13 +832,13 @@ async def broadcast_state():
 
         # Κλήση μεθόδων για ενημέρωση συμπεριφοράς, συγκρούσεων και επιθέσεων παικτών και εχθρών
 
-        update_enemy_ai_and_movement()  # Ενημέρωση και κίνησης εχθρών
-
-        player_enemy_blocking(prev_players, prev_enemies)   # Συγκρούση παικτών/εχθρών ώστε να μην περνάνε ο ένας μέσα από τον άλλο
+        update_enemy_chase_and_movement()  # Ενημέρωση και κίνησης εχθρών
 
         apply_enemy_attacks()   # Επιθέσεις εχθρών
 
         apply_player_attacks()  # Επιθέσεις παικτών
+
+        player_enemy_blocking(prev_players, prev_enemies)   # Συγκρούση παικτών/εχθρών ώστε να μην περνάνε ο ένας μέσα από τον άλλο
 
         # Στέλνει την κατάσταση του παιχνιδιού σε όλους τους πελάτες
         await pub_socket.send_json({
