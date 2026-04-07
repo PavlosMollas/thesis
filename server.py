@@ -6,6 +6,7 @@ import time
 import arcade
 from sprites import get_enemy_type_defs
 import math
+from region import Region
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
@@ -13,18 +14,12 @@ if sys.platform.startswith("win"):
 
 TILE_SCALING = 1.0                      # Scale Πλακιδίων
 
-tile_map = arcade.load_tilemap(
-    "assets/maps/firstRegion.tmx",      # Φόρτωση χάρτη από το tiled
-    scaling=TILE_SCALING,
-    use_spatial_hash=True               # Το collision γίνεται μόνο με κοντινά αντικείμενα (βελτίωση απόδοσης)
-)
+regions = {
+    "firstRegion": Region("firstRegion", "assets/maps/firstRegion.tmx", TILE_SCALING),
+    "secondRegion": Region("secondRegion", "assets/maps/secondRegion.tmx", TILE_SCALING),
+}
 
-wall_list = tile_map.sprite_lists["Walls"]  # Παίρνουμε το walls layer του tiled για να βάλουμε collision μόνο σε αυτά
-bridge_list = tile_map.sprite_lists.get("Bridge")
-
-# Διαστάσεις χάρτη σε pixels
-MAP_WIDTH  = tile_map.width * tile_map.tile_width
-MAP_HEIGHT = tile_map.height * tile_map.tile_height
+START_REGION = "firstRegion"
 
 # Διαστάσεις παίκτη
 PLAYER_WIDTH  = 32
@@ -60,95 +55,67 @@ enemies = {}
 
 connected = set()     # Σύνολο παικτών σε σειρά σύνδεσης
 
-spawn_points = []     # Λίστα για το spawn παικτών
-enemy_spawns = []     # Λίστα για το spawn εχθρών
-
 next_spawn_index = 0  # Δείκτης για κυκλική επιλογή επόμενου spawn point παίκτη
 
 enemy_spawn_counter = 0
 
-object_layer = tile_map.object_lists.get("Object")  # Παίρνουμε το object layer για το spawn από το TMX, όπου έχουμε ορίσει σημεία spawn μέσα από το Tiled
-
-if not object_layer:
-    raise RuntimeError("No Object layer found in TMX map")
-
-# Διαβάζουμε όλα τα objects από το object layer
-for obj in object_layer:
-    if obj.name == "player_spawn":  # Για κάθε object με το όνομα player_spawn (έτσι έχει ονομαστεί στο tiled), προσθέτουμε το σημείο στη λίστα
-        x, y = obj.shape
-        spawn_points.append((x, y))
-    
-    enemy_type = None
-    if hasattr(obj, "properties") and obj.properties:
-        enemy_type = obj.properties.get("enemy_type")
-
-    if enemy_type:
-        x, y = obj.shape
-        enemy_id = f"enemy_{enemy_spawn_counter}"
-        enemy_spawn_counter += 1
-        enemy_spawns.append((enemy_id, enemy_type, x, y))
-
-# Πρέπει να υπάρχει τουλάχιστον ένα spawn point για παίκτες
-if not spawn_points:
-    raise RuntimeError("No player_spawn objects found in Object layer")
-
-print("Spawn points loaded from TMX:", spawn_points)    # Εκτύπωση σημείων στον server για debugging
-print("Enemy spawns:", enemy_spawns)
-
 # Φόρτωση εχθρών από το spawn του tiled
-for (enemy_id, enemy_type, x, y) in enemy_spawns:
+for region_name, region in regions.items():
+    for (enemy_id, enemy_type, x, y) in region.enemy_spawns:
 
-    defs = get_enemy_type_defs(enemy_type)
+        defs = get_enemy_type_defs(enemy_type)
 
-    enemies[enemy_id] = {
+        enemies[enemy_id] = {
+            # Περιοχή εχθρού
+            "region": region_name,
 
-        # Είδος εχθρού
-        "type": enemy_type,
+            # Είδος εχθρού
+            "type": enemy_type,
 
-        # Τρέχουσα θέση και αρχική θέση spawn
-        "x": x,
-        "y": y,
-        "spawn_x": x,
-        "spawn_y": y,
+            # Τρέχουσα θέση και αρχική θέση spawn
+            "x": x,
+            "y": y,
+            "spawn_x": x,
+            "spawn_y": y,
 
-        # Κατάσταση animation / συμπεριφοράς
-        "state": "idle",
-        "dir": "down",
-        "dead": False,
-        "hurt_seq": 0,
+            # Κατάσταση animation / συμπεριφοράς
+            "state": "idle",
+            "dir": "down",
+            "dead": False,
+            "hurt_seq": 0,
 
-        # Στατιστικά μάχης
-        "hp": defs["hp_max"],
-        "hp_max": defs["hp_max"],
-        "damage": defs["damage"],
-        "resist": defs["resist"],
-        "attack_speed": defs["attack_speed"],
-        "move_speed": defs["move_speed"],
+            # Στατιστικά μάχης
+            "hp": defs["hp_max"],
+            "hp_max": defs["hp_max"],
+            "damage": defs["damage"],
+            "resist": defs["resist"],
+            "attack_speed": defs["attack_speed"],
+            "move_speed": defs["move_speed"],
 
-        # Διαστάσεις hitbox
-        "hitbox_w": defs["hitbox_w"],
-        "hitbox_h": defs["hitbox_h"],
+            # Διαστάσεις hitbox
+            "hitbox_w": defs["hitbox_w"],
+            "hitbox_h": defs["hitbox_h"],
 
-        # Αποστάσεις συμπεριφοράς εχθρού
-        "aggro_radius": defs["aggro_radius"],   # απόσταση εντοπισμού παίκτη
-        "lose_radius": defs["lose_radius"],     # απόσταση εγκατάλειψης στόχου
-        "attack_range": defs["attack_range"],   # απόσταση επίθεσης
+            # Αποστάσεις συμπεριφοράς εχθρού
+            "aggro_radius": defs["aggro_radius"],   # απόσταση εντοπισμού παίκτη
+            "lose_radius": defs["lose_radius"],     # απόσταση εγκατάλειψης στόχου
+            "attack_range": defs["attack_range"],   # απόσταση επίθεσης
 
-        # Χρονισμός επιθέσεων
-        "windup": defs["windup"],
-        "attack_cooldown": 1.0 / defs["attack_speed"],
-        "next_attack_time": 0.0,
-        "pending_hit_time": 0.0,
+            # Χρονισμός επιθέσεων
+            "windup": defs["windup"],
+            "attack_cooldown": 1.0 / defs["attack_speed"],
+            "next_attack_time": 0.0,
+            "pending_hit_time": 0.0,
 
-        # Τρέχων στόχος και μεταβλητές για stuck handling
-        "target": None,
+            # Τρέχων στόχος και μεταβλητές για stuck handling
+            "target": None,
 
-        "last_x": x,
-        "last_y": y,
-        "stuck_time": 0.0,
-        "unstuck_until": 0.0,
-        "unstuck_side": 1,
-    }
+            "last_x": x,
+            "last_y": y,
+            "stuck_time": 0.0,
+            "unstuck_until": 0.0,
+            "unstuck_side": 1,
+        }
 
 TICK_DT = 0.02      # Η διάρκεια κάθε "tick" σε δευτερόλεπτα (ρυθμίζει το frame rate ~50 updates/sec)
 tick = 0            # Μετρητής "tick" για το παιχνίδι
@@ -175,6 +142,10 @@ async def handle_control():
 
             # Προσθήκη του παίκτη στo σύνολο των συνδεδεμένων
             connected.add(pid)
+
+            # Περιοχή και spawn σε αυτή
+            start_region = regions[START_REGION]
+            spawn_points = start_region.spawn_points
 
             # Spawn place
             spawn_index = next_spawn_index
@@ -217,6 +188,9 @@ async def handle_control():
 
                 # Κατεύθυνση κίνησης
                 "move_dir": "STOP",
+
+                # Αρχική περιοχή
+                "region": START_REGION,
                 }   
 
             print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
@@ -239,8 +213,45 @@ async def handle_control():
             # Επιβεβαίωση αποσύνδεσης προς client
             await control_socket.send_json({"status": "ok"})
 
+def get_region(region_name: str) -> Region:
+    return regions[region_name]
+
+def rect_contains_point(rect, x, y):
+    return (
+        rect["x"] <= x <= rect["x"] + rect["width"] and
+        rect["y"] <= y <= rect["y"] + rect["height"]
+    )
+
+def try_player_transition(player):
+    current_region = get_region(player["region"])
+
+    for tr in current_region.transitions:
+        if rect_contains_point(tr, player["x"], player["y"]):
+            target_region_name = tr["target_map"]
+            target_spawn_name = tr["target_spawn"]
+
+            if target_region_name not in regions:
+                print(f"Unknown target region: {target_region_name}")
+                return
+
+            target_region = get_region(target_region_name)
+            spawn_pos = target_region.get_named_spawn(target_spawn_name)
+
+            if spawn_pos is None:
+                print(f"Spawn '{target_spawn_name}' not found in region '{target_region_name}'")
+                return
+
+            player["region"] = target_region_name
+            player["x"], player["y"] = spawn_pos
+
+            print(f"Player {player['nickname']} transitioned to {target_region_name} at spawn {target_spawn_name}")
+            return
+
 # Μέθοδος που ελέγχει αν ο παίκτης ή ο εχθρός βρίσκεται πάνω σε γέφυρα
-def on_bridge(x, y, w, h):
+def on_bridge(region_name, x, y, w, h):
+    region = get_region(region_name)
+    bridge_list = region.bridge_list
+
     if not bridge_list:
         return False
 
@@ -259,9 +270,12 @@ def on_bridge(x, y, w, h):
 
 # Μέθοδος για το collision
 # Ελέγχει collision με τοίχους χρησιμοποιώντας ορθογώνιο hitbox (AABB)
-def collides_with_walls_aabb(x, y, w, h):
+def collides_with_walls_aabb(region_name, x, y, w, h):
+    region = get_region(region_name)
+    wall_list = region.wall_list
+
     # Αν ο παίκτης ή ο εχθρός είναι πάνω στη γέφυρα, αγνοούμε το collision από walls
-    if on_bridge(x, y, w, h):
+    if on_bridge(region_name, x, y, w, h):
         return False
 
     # Υπολογισμός ορίων AABB (Axis-Aligned Bounding Box)
@@ -277,17 +291,21 @@ def collides_with_walls_aabb(x, y, w, h):
     return False
 
 # Μέθοδος για τον έλεγχο collision του παίκτη με τις σταθερές διαστάσεις του
-def player_hits_walls(x, y):
-    return collides_with_walls_aabb(x, y, PLAYER_WIDTH, PLAYER_HEIGHT)
+def player_hits_walls(player, x, y):
+    return collides_with_walls_aabb(player["region"], x, y, PLAYER_WIDTH, PLAYER_HEIGHT)
 
 # Μέθοδος για τον έλεγχο collision του εχθρού με βάση το δικό του hitbox
 def enemy_hits_walls(e, x, y):
-    return collides_with_walls_aabb(x, y, e["hitbox_w"], e["hitbox_h"])
+    return collides_with_walls_aabb(e["region"], x, y, e["hitbox_w"], e["hitbox_h"])
 
 # Μέθοδος κίνησης εχθρού ξεχωριστά στους άξονες X, Y για καλύτερο έλεγχο collision και πιο ομαλή κίνηση
 def move_enemy(e, delta_x, delta_y):
     moved = False
     current_x, current_y = e["x"], e["y"]
+
+    region = get_region(e["region"])
+    map_width = region.map_width
+    map_height = region.map_height
 
     # Κίνηση στον άξονα X
     new_x = current_x + delta_x
@@ -295,7 +313,7 @@ def move_enemy(e, delta_x, delta_y):
     # Περιορισμός στον άξονα Χ ώστε να μείνει μέσα στα όρια του χάρτη
     w = e["hitbox_w"]
     h = e["hitbox_h"]
-    new_x = max(w/2, min(new_x, MAP_WIDTH - w/2))
+    new_x = max(w/2, min(new_x, map_width - w/2))
 
     # Αν δεν υπάρχει collision, εφαρμόζουμε τη νέα θέση στον άξονα Χ
     if not enemy_hits_walls(e, new_x, current_y):
@@ -306,7 +324,7 @@ def move_enemy(e, delta_x, delta_y):
     new_y = current_y + delta_y
 
     # Περιορισμός στον άξονα Y ώστε να μείνει μέσα στα όρια του χάρτη
-    new_y = max(h/2, min(new_y, MAP_HEIGHT - h/2))
+    new_y = max(h/2, min(new_y, map_height - h/2))
 
     # Αν δεν υπάρχει collision, εφαρμόζουμε τη νέα θέση στον άξονα Y
     if not enemy_hits_walls(e, e["x"], new_y):
@@ -330,6 +348,9 @@ def player_enemy_blocking(prev_players, prev_enemies):
         for eid, e in enemies.items():
             # Αγνοούμε νεκρούς εχθρούς
             if e.get("dead"):
+                continue
+
+            if p["region"] != e["region"]:
                 continue
 
             # Προηγούμενη θέση enemy
@@ -469,6 +490,9 @@ def update_enemy_chase_and_movement():
             if p.get("dead", False):
                 continue
 
+            if p["region"] != e["region"]:
+                continue
+
             d = dist(e["x"], e["y"], p["x"], p["y"])
             if d < nearest_d:
                 nearest_d = d
@@ -484,7 +508,7 @@ def update_enemy_chase_and_movement():
             tp = players.get(e["target"])
 
             # Αν ο στόχος δεν υπάρχει πια ή είναι νεκρός, τον αφήνει
-            if tp is None or tp.get("dead", False):
+            if tp is None or tp.get("dead", False) or tp.get("region") != e["region"]:
                 e["target"] = None
             else:
                 d = dist(e["x"], e["y"], tp["x"], tp["y"])
@@ -572,8 +596,8 @@ def apply_enemy_attacks():
 
         tp = players.get(e["target"])
 
-        # Αν ο στόχος δεν υπάρχει ή πέθανε, καθαρίζουμε στόχο και pending attack
-        if tp is None or tp.get("dead", False):
+        # Αν ο στόχος δεν υπάρχει ή πέθανε ή είναι σε διαφορετική περιοχή, καθαρίζουμε στόχο και pending attack
+        if tp is None or tp.get("dead", False) or tp.get("region") != e["region"]:
             e["target"] = None
             e["pending_hit_time"] = 0.0
             continue
@@ -666,6 +690,9 @@ def apply_player_attacks():
         for eid, e in enemies.items():
             # Αγνοούμε νεκρούς εχθρούς
             if e.get("dead", False):
+                continue
+
+            if e["region"] != p["region"]:
                 continue
 
             dx = e["x"] - px
@@ -794,15 +821,19 @@ async def broadcast_state():
             elif direction == "RIGHT":
                 new_x += SPEED
 
+            region = get_region(p["region"])
+            map_width = region.map_width
+            map_height = region.map_height
+
             # Περιορισμός της νέας θέσης ώστε ο παίκτης να μην βγει εκτός των ορίων του χάρτη
-            new_x = max(PLAYER_WIDTH / 2, min(new_x, MAP_WIDTH - PLAYER_WIDTH / 2))
-            new_y = max(PLAYER_HEIGHT / 2, min(new_y, MAP_HEIGHT - PLAYER_HEIGHT / 2))
+            new_x = max(PLAYER_WIDTH / 2, min(new_x, map_width - PLAYER_WIDTH / 2))
+            new_y = max(PLAYER_HEIGHT / 2, min(new_y, map_height - PLAYER_HEIGHT / 2))
 
             # Έλεγχος collision ξεχωριστά για X και Y
-            if not player_hits_walls(new_x, p["y"]):
+            if not player_hits_walls(p, new_x, p["y"]):
                 p["x"] = new_x
 
-            if not player_hits_walls(p["x"], new_y):
+            if not player_hits_walls(p, p["x"], new_y):
                 p["y"] = new_y
 
             # Ενημέρωση visual state / direction
@@ -829,6 +860,8 @@ async def broadcast_state():
                         p["state"] = "walk"
                     else:
                         p["state"] = "idle"
+            
+            try_player_transition(p)
 
         # Κλήση μεθόδων για ενημέρωση συμπεριφοράς, συγκρούσεων και επιθέσεων παικτών και εχθρών
 

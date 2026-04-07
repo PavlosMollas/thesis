@@ -4,7 +4,6 @@ import time
 # Ρυθμίσεις Sprite sheet 
 FRAME_W = 64    # Πλάτος frame στο sprite sheet
 FRAME_H = 64    # Ύψος frame στο sprite sheet
-SCALE = 2       # Κλίμακα sprite στο παιχνίδι
 
 DOWN  = "down"
 LEFT  = "left"
@@ -17,6 +16,12 @@ ATTACK = "attack"
 HURT = "hurt"
 DEATH = "death"
 WALK_ATTACK = "walk_attack"
+
+# Κλίμακα sprite στο παιχνίδι
+CLASS_SCALES = {
+    "Warrior": 2.0,
+    "Mage": 1.75,
+}
 
 ENEMY_TYPES = {
 
@@ -149,8 +154,8 @@ def load_player_animations(class_name: str):
         raise ValueError(f"Unknown class: {class_name}")
 
 class PlayerSprite(arcade.Sprite):
-    def __init__(self, animations):
-        super().__init__(scale=SCALE)
+    def __init__(self, animations, scale=2):
+        super().__init__(scale=scale)
 
         self.attack_finished = False
         self.attack_dir = None
@@ -327,8 +332,8 @@ class PlayerSprite(arcade.Sprite):
             self.texture = frames[self.cur_frame]
 
 class EnemySprite(arcade.Sprite):
-    def __init__(self, enemy_type, animations):
-        super().__init__(scale=SCALE)
+    def __init__(self, enemy_type, animations, scale=1.9):
+        super().__init__(scale=scale)
 
         self.enemy_type = enemy_type
 

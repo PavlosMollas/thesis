@@ -12,12 +12,17 @@ from playerView import CreatePlayerView
 from sprites import (
     load_enemy_animations, load_player_animations, EnemySprite, PlayerSprite,
     IDLE, WALK, ATTACK, HURT, DEATH, WALK_ATTACK,
-    DOWN, UP, LEFT, RIGHT
+    DOWN, UP, LEFT, RIGHT, CLASS_SCALES
 )
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+REGION_MAPS = {
+    "firstRegion": "assets/maps/firstRegion.tmx",
+    "secondRegion": "assets/maps/secondRegion.tmx",
+}
 
 CLIENT_PLAYER_ID = None     # Player id
 CLIENT_NICKNAME = None      # Player nickname
@@ -192,6 +197,10 @@ class MyGame(arcade.View):
         self.terrain_list = None
         self.wall_list = None
 
+        # Περιοχές
+        self.current_region_name = None
+        self.tile_map = None
+
         self.world_camera = arcade.Camera2D()   # Κάμερα για τον κόσμο
 
         self.elapsed_time = 0.0     # Χρόνος που έχει περάσει στο match (από server)
@@ -215,6 +224,19 @@ class MyGame(arcade.View):
             font_size=20
         )
 
+        # text για μήνυμα αλλαγής περιοχής
+        self.region_message = ""
+        self.region_message_timer = 0.0
+
+        self.region_message_text = arcade.Text(
+            "",
+            0, 0,
+            arcade.color.WHITE,
+            font_size=20,
+            anchor_x="center",
+            anchor_y="center"
+        )
+
     # Μέθοδος για την κίνηση του παίκτη πίσω από τα walls (έξω από το collision point)
     def sort_key(self, sprite):
         offset = 0
@@ -226,6 +248,45 @@ class MyGame(arcade.View):
             return sprite.bottom
 
         return sprite.center_y + offset     # Για όλα τα άλλα sprites, sort με βάση το center_y + offset
+    
+    def load_region(self, region_name: str):
+        if region_name not in REGION_MAPS:
+            raise RuntimeError(f"Unknown region '{region_name}'")
+
+        self.current_region_name = region_name
+
+        self.tile_map = arcade.load_tilemap(
+            REGION_MAPS[region_name],
+            scaling=1.0,
+            use_spatial_hash=True
+        )
+
+        self.terrain_list = self.tile_map.sprite_lists.get("Terrain")
+        self.wall_list = self.tile_map.sprite_lists.get("Walls", arcade.SpriteList())
+
+        self.map_width = self.tile_map.width * self.tile_map.tile_width
+        self.map_height = self.tile_map.height * self.tile_map.tile_height
+
+        # ξαναχτίζουμε actor_list για σωστό draw order
+        self.actor_list = arcade.SpriteList()
+
+        for w in self.wall_list:
+            self.actor_list.append(w)
+
+        if self.player_sprite is not None:
+            self.actor_list.append(self.player_sprite)
+
+        for spr in self.other_sprites.values():
+            self.actor_list.append(spr)
+
+        for spr in self.enemy_sprites.values():
+            self.actor_list.append(spr)
+
+        if self.player_sprite is not None:
+            self.world_camera.position = (
+                self.player_sprite.center_x,
+                self.player_sprite.center_y
+            )
     
     # Μέθοδος για την κάμερα
     def update_camera(self):
@@ -355,20 +416,7 @@ class MyGame(arcade.View):
 
         arcade.set_background_color(arcade.color.BLACK)
 
-        # Φόρτωση tilemap για την πρώτη περιοχή
-        self.tile_map = arcade.load_tilemap(
-            "assets/maps/firstRegion.tmx",
-            scaling=1.0,
-            use_spatial_hash=True
-        )
-        
-        # Ανάθεση layers
-        self.terrain_list = self.tile_map.sprite_lists["Terrain"]
-        self.wall_list = self.tile_map.sprite_lists["Walls"]
-
-        # Διαστάσεις χάρτη σε pixels
-        self.map_width = self.tile_map.width * self.tile_map.tile_width
-        self.map_height = self.tile_map.height * self.tile_map.tile_height
+        self.current_region_name = None
 
         # Φόρτωση animations με βάση την κλάση που διάλεξε ο παίκτης
         if not hasattr(self.window, "class_name") or not self.window.class_name:
@@ -381,7 +429,8 @@ class MyGame(arcade.View):
 
         # Δημιουργία player sprite
         if self.player_sprite is None:
-            self.player_sprite = PlayerSprite(self.player_animations)
+            player_scale = CLASS_SCALES.get(chosen_class, 2.0)
+            self.player_sprite = PlayerSprite(self.player_animations, scale=player_scale)
 
             # Βάζει το nickname από το login
             self.player_sprite.nickname = getattr(self.window, "nickname", "Player")
@@ -390,16 +439,8 @@ class MyGame(arcade.View):
             self.player_sprite.hp = 1.0
             self.player_sprite.energy = 1.0
             self.player_sprite.level = getattr(self.window, "level", 1)
-
-        # Δημιουργία του actor_list κάθε φορά που μπαίνουμε στο view
-        self.actor_list = arcade.SpriteList()
-
-        # Προσθήκη walls
-        for w in self.wall_list:
-            self.actor_list.append(w)
-
-        # Προσθήκη player
-        self.actor_list.append(self.player_sprite)
+        
+        self.load_region("firstRegion")
 
         # Τοποθέτηση timer στο UI
         self.timer_text.x = 10
@@ -449,6 +490,25 @@ class MyGame(arcade.View):
 
         self.timer_text.draw()      # Ζωγραφίζουμε το timer
 
+        if self.region_message:
+            box_width = 420
+            box_height = 80
+
+            left = self.window.width / 2 - box_width / 2
+            right = self.window.width / 2 + box_width / 2
+            bottom = self.window.height / 2 - box_height / 2
+            top = self.window.height / 2 + box_height / 2
+
+            arcade.draw_lrbt_rectangle_filled(
+                left,
+                right,
+                bottom,
+                top,
+                (0, 0, 0, 180)
+            )
+
+            self.region_message_text.draw()
+
     # Μέθοδος που διαβάζει το πιο πρόσφατο state που έστειλε ο server και ενημερώνει τις τοπικές δομές (buffers, snapshots, sprites)
     def process_server_state(self):
         # Αν δεν υπάρχει κανένα state στην ουρά, δεν κάνουμε τίποτα
@@ -480,6 +540,32 @@ class MyGame(arcade.View):
         players_state = latest_state.get("players", {})
         enemies_state = latest_state.get("enemies", {})
 
+        # Αλλαγή περιοχής
+        local_player_state = players_state.get(CLIENT_PLAYER_ID)
+        if local_player_state is not None:
+            new_region = local_player_state.get("region", "firstRegion")
+            if new_region != self.current_region_name:
+                self.load_region(new_region)
+
+                # Μήνυμα αλλαγής περιοχής
+                self.region_message = "Proceeding to the next region..."
+                self.region_message_timer = 1.5
+                self.region_message_text.text = self.region_message
+                self.region_message_text.x = self.window.width / 2
+                self.region_message_text.y = self.window.height / 2
+
+                # καθάρισε interpolation buffers για να μη γίνει οπτικό glitch
+                self.position_buffers.clear()
+                self.snapshots.clear()
+                self.interp_t.clear()
+
+                # reset camera κοντά στον player
+                if self.player_sprite is not None:
+                    self.world_camera.position = (
+                        self.player_sprite.center_x,
+                        self.player_sprite.center_y
+                    )
+
 
         # Ενημέρωση του timer σε μορφή mm:ss
         minutes = int(self.elapsed_time) // 60
@@ -488,6 +574,10 @@ class MyGame(arcade.View):
 
         # Για κάθε παίκτη που υπάρχει στο server state
         for pid, pos in players_state.items():
+            player_region = pos.get("region", "firstRegion")
+            if self.current_region_name is not None and player_region != self.current_region_name:
+                continue
+
             x = pos["x"]
             y = pos["y"]
             nickname = pos.get("nickname", pid)
@@ -509,7 +599,8 @@ class MyGame(arcade.View):
                     if class_name not in self.player_animation_dict:
                         self.player_animation_dict[class_name] = load_player_animations(class_name)
 
-                    spr = PlayerSprite(self.player_animation_dict[class_name])
+                    player_scale = CLASS_SCALES.get(class_name, 2.0)
+                    spr = PlayerSprite(self.player_animation_dict[class_name], scale=player_scale)
                     #spr.class_name = class_name
                     self.other_sprites[pid] = spr
                     self.actor_list.append(spr)
@@ -544,7 +635,10 @@ class MyGame(arcade.View):
             self.interp_t[pid] = 0.0
 
         # Καθαρισμός παικτών που δεν υπάρχουν πια στο server state
-        existing_pids = set(players_state.keys())
+        existing_pids = {
+            pid for pid, pos in players_state.items()
+            if pos.get("region", "firstRegion") == self.current_region_name and pid != CLIENT_PLAYER_ID
+        }
 
         for pid in list(self.other_sprites.keys()):
             if pid not in existing_pids:
@@ -556,6 +650,10 @@ class MyGame(arcade.View):
                 self.interp_t.pop(pid, None)
 
         for eid, epos in enemies_state.items():
+            enemy_region = epos.get("region", "firstRegion")
+            if self.current_region_name is not None and enemy_region != self.current_region_name:
+                continue
+
             ex = epos["x"]
             ey = epos["y"]
             etype = epos.get("type", "orc")
@@ -595,7 +693,11 @@ class MyGame(arcade.View):
                 espr.last_hurt_seq = hurt_seq
                 espr.trigger_hurt(edir)
         
-        existing_eids = set(enemies_state.keys())
+        existing_eids = {
+            eid for eid, epos in enemies_state.items()
+            if epos.get("region", "firstRegion") == self.current_region_name
+        }
+
         for eid in list(self.enemy_sprites.keys()):
             if eid not in existing_eids:
                 spr = self.enemy_sprites.pop(eid)
@@ -777,6 +879,12 @@ class MyGame(arcade.View):
             
         # Ενημέρωση κάμερας
         self.update_camera()
+
+        if self.region_message_timer > 0:
+            self.region_message_timer -= delta_time
+            if self.region_message_timer <= 0:
+                self.region_message_timer = 0
+                self.region_message = ""
 
     def is_moving_input(self):
         return len(self.held_move) > 0   # ή self.last_sent_move is not None
