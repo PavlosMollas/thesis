@@ -17,6 +17,8 @@ TILE_SCALING = 1.0                      # Scale Πλακιδίων
 regions = {
     "firstRegion": Region("firstRegion", "assets/maps/firstRegion.tmx", TILE_SCALING),
     "secondRegion": Region("secondRegion", "assets/maps/secondRegion.tmx", TILE_SCALING),
+    "thirdRegion": Region("thirdRegion", "assets/maps/thirdRegion.tmx", TILE_SCALING),
+    "fourthRegion": Region("fourthRegion", "assets/maps/fourthRegion.tmx", TILE_SCALING),
 }
 
 START_REGION = "firstRegion"
@@ -273,6 +275,9 @@ def on_bridge(region_name, x, y, w, h):
 def collides_with_walls_aabb(region_name, x, y, w, h):
     region = get_region(region_name)
     wall_list = region.wall_list
+    river_list = region.river_list
+    lava_list = region.lava_list
+    bridge_wall_list = region.bridge_wall_list
 
     # Αν ο παίκτης ή ο εχθρός είναι πάνω στη γέφυρα, αγνοούμε το collision από walls
     if on_bridge(region_name, x, y, w, h):
@@ -287,6 +292,20 @@ def collides_with_walls_aabb(region_name, x, y, w, h):
     # Έλεγχος overlap με κάθε wall sprite
     for wall in wall_list:
         if right > wall.left and left < wall.right and top > wall.bottom and bottom < wall.top:
+            return True
+        
+    # Collision με water
+    for river in river_list:
+        if right > river.left and left < river.right and top > river.bottom and bottom < river.top:
+            return True
+        
+    if lava_list:
+        for lava in lava_list:
+            if right > lava.left and left < lava.right and top > lava.bottom and bottom < lava.top:
+                return True
+        
+    for bridge_wall in bridge_wall_list:
+        if right > bridge_wall.left and left < bridge_wall.right and top > bridge_wall.bottom and bottom < bridge_wall.top:
             return True
     return False
 

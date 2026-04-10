@@ -14,7 +14,10 @@ class Region:
         )
 
         # Layers που χρειάζονται για collision / movement
-        self.wall_list = self.tile_map.sprite_lists["Walls"]
+        self.wall_list = self.tile_map.sprite_lists.get("Walls", arcade.SpriteList())
+        self.river_list = self.tile_map.sprite_lists.get("River", arcade.SpriteList())
+        self.lava_list = self.tile_map.sprite_lists.get("Lava")
+        self.bridge_wall_list = self.tile_map.sprite_lists.get("Bridge_wall", arcade.SpriteList())
         self.bridge_list = self.tile_map.sprite_lists.get("Bridge")
 
         # Διαστάσεις map σε pixels
@@ -22,10 +25,10 @@ class Region:
         self.map_height = self.tile_map.height * self.tile_map.tile_height
 
         # Spawn / transition data
-        self.spawn_points = []      
-        self.named_spawns = {}      
-        self.enemy_spawns = []      
-        self.transitions = []       
+        self.spawn_points = []
+        self.named_spawns = {}
+        self.enemy_spawns = []
+        self.transitions = []
 
         self.load_objects()
 

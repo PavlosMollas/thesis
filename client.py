@@ -22,6 +22,8 @@ if sys.platform.startswith("win"):
 REGION_MAPS = {
     "firstRegion": "assets/maps/firstRegion.tmx",
     "secondRegion": "assets/maps/secondRegion.tmx",
+    "thirdRegion": "assets/maps/thirdRegion.tmx",
+    "fourthRegion": "assets/maps/fourthRegion.tmx",
 }
 
 CLIENT_PLAYER_ID = None     # Player id
@@ -195,7 +197,11 @@ class MyGame(arcade.View):
         
         # Tilemap layers
         self.terrain_list = None
+        self.road_list = None
+        self.river_list = None
         self.wall_list = None
+        self.bridge_list = None
+        self.lava_list = None
 
         # Περιοχές
         self.current_region_name = None
@@ -261,8 +267,13 @@ class MyGame(arcade.View):
             use_spatial_hash=True
         )
 
+        # Visual layers
         self.terrain_list = self.tile_map.sprite_lists.get("Terrain")
+        self.road_list = self.tile_map.sprite_lists.get("Road")
+        self.lava_list = self.tile_map.sprite_lists.get("Lava")
+        self.river_list = self.tile_map.sprite_lists.get("River")
         self.wall_list = self.tile_map.sprite_lists.get("Walls", arcade.SpriteList())
+        self.bridge_list = self.tile_map.sprite_lists.get("Bridge")
 
         self.map_width = self.tile_map.width * self.tile_map.tile_width
         self.map_height = self.tile_map.height * self.tile_map.tile_height
@@ -470,6 +481,19 @@ class MyGame(arcade.View):
             if self.terrain_list:
                 self.terrain_list.draw()        # Ζωγραφίζουμε terrain
 
+            if self.road_list:
+                self.road_list.draw()           # Ζωγραφίζουμε δρόμο
+
+            if self.lava_list:
+                self.lava_list.draw()           # Ζωγραφίζουμε λάβα
+
+            if self.river_list:
+                self.river_list.draw()          # Ζωγραφίζουμε ποτάμι
+
+            # Layer γέφυρας
+            if self.bridge_list:
+                self.bridge_list.draw()
+
             # Ταξινόμηση αντικειμένων με βάση το Y (για σωστό βάθος)
             self.actor_list.sort(key=self.sort_key)  # Ζωγραφίζουμε όλα τα sprites
             self.actor_list.draw()
@@ -490,6 +514,7 @@ class MyGame(arcade.View):
 
         self.timer_text.draw()      # Ζωγραφίζουμε το timer
 
+        # Εμφάνιση μηνύματος στο κέντρο της οθόνης όταν αλλάξουμε περιοχή
         if self.region_message:
             box_width = 420
             box_height = 80
