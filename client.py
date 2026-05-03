@@ -10,9 +10,10 @@ from classView import ClassSelectView
 from login import MenuView
 from playerView import CreatePlayerView
 from sprites import (
-    load_enemy_animations, load_player_animations, EnemySprite, PlayerSprite,
-    IDLE, WALK, ATTACK, HURT, DEATH, WALK_ATTACK,
-    DOWN, UP, LEFT, RIGHT, CLASS_SCALES
+    PlayerSprite, EnemySprite, ProjectileSprite,
+    load_player_animations, load_enemy_animations,
+    load_projectile_animations, get_enemy_type_defs,
+    PROJECTILE_ANIMATION_CONFIGS, CLASS_SCALES, IDLE, WALK, ATTACK, DEATH, WALK_ATTACK, DOWN, UP, LEFT, RIGHT,
 )
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
@@ -192,8 +193,15 @@ class MyGame(arcade.View):
         self.enemy_list = arcade.SpriteList()   # Λίστα με τα sprites των εχθρών
         self.enemy_animation_dict = {}          # Λεξικό για animation ανά είδος εχθρού
 
+        self.enemy_projectiles = arcade.SpriteList()    # Λίστα για τις μακρινές επιθέσεις των magic goblins
+        self.projectile_animation_dict = {}             # Λεξικό για το animation των επιθέσεων των magic goblins
+
         self.attack_buffered = False
         self.attack_buffer_threshold = 0.70  # τελευταίο 30% του attack επιτρέπει buffer
+
+        self.local_next_attack_time = 0.0
+        self.local_attack_cooldown = 0.45
+        self.buffer_attack_state = None
         
         # Tilemap layers
         self.terrain_list = None
@@ -278,8 +286,9 @@ class MyGame(arcade.View):
         self.map_width = self.tile_map.width * self.tile_map.tile_width
         self.map_height = self.tile_map.height * self.tile_map.tile_height
 
-        # ξαναχτίζουμε actor_list για σωστό draw order
+        # ξαναχτίζουμε actor_list, projectile_list για σωστό draw order
         self.actor_list = arcade.SpriteList()
+        self.enemy_projectiles = arcade.SpriteList()
 
         for w in self.wall_list:
             self.actor_list.append(w)
@@ -498,6 +507,9 @@ class MyGame(arcade.View):
             self.actor_list.sort(key=self.sort_key)  # Ζωγραφίζουμε όλα τα sprites
             self.actor_list.draw()
 
+            # Projectiles εχθρών
+            self.enemy_projectiles.draw()
+
             # Μπάρες για local player
             if self.player_sprite:
                 self.draw_player_status_bars(self.player_sprite)
@@ -638,7 +650,7 @@ class MyGame(arcade.View):
             sprite.energy = energy
 
             # server-driven visual sync
-            if pid != CLIENT_PLAYER_ID or sprite.state not in (ATTACK, WALK_ATTACK):
+            if pid != CLIENT_PLAYER_ID:
                 sprite.set_base_state(pstate, pdir)
 
             if pdead:
@@ -791,32 +803,6 @@ class MyGame(arcade.View):
             sprite.center_x = snap_x + (target_x - snap_x) * x_param
             sprite.center_y = snap_y + (target_y - snap_y) * x_param
 
-            # Έλεγχος αν ο παίκτης κινείται
-            move_dx = x1 - x0
-            move_dy = y1 - y0
-            moving = abs(move_dx) > 0.01 or abs(move_dy) > 0.01
-
-            # --- IMPORTANT: Μην overwrit-άρεις combat states του local player ---
-            if sprite.state in (ATTACK, HURT, DEATH, WALK_ATTACK):
-                # προαιρετικά: μπορείς να ενημερώνεις last_direction από την κίνηση, αλλά όχι state
-                locked = getattr(sprite, "attack_dir", None)
-                if locked is not None:
-                    sprite.direction = locked
-                    sprite.last_direction = locked
-                continue  # ή continue (αν είσαι μέσα σε loop)
-
-            # Ορισμός animation και κατεύθυνσης
-            if moving:
-                if abs(move_dx) > abs(move_dy):
-                    direction = RIGHT if move_dx > 0 else LEFT
-                else:
-                    direction = UP if move_dy > 0 else DOWN
-
-                sprite.last_direction = direction
-                sprite.set_state(WALK, direction)
-            else:
-                sprite.set_state(IDLE, sprite.last_direction)
-
     # Μέθοδος που καλείται κάθε frame συντονίζει networking, κίνηση, animation και κάμερα
     def on_update(self, delta_time):
         # Ενημέρωση κατάστασης από τον server
@@ -825,16 +811,19 @@ class MyGame(arcade.View):
         # Εφαρμογή smoothing στην κίνηση
         self.apply_smoothing(delta_time)
 
-        # Αποστολή movement input στον server (μόνο 1 κατεύθυνση: last pressed wins)
+        # Αποστολή movement input στον server (μόνο 1 κατεύθυνση: last pressed)
         if NETWORK_LOOP is not None and self.player_sprite:
             s = self.player_sprite.state
 
-            if s in (ATTACK, HURT, DEATH):
+            if s == DEATH or getattr(self.player_sprite, "death_started", False):
+                move_dir = None
+
+            elif s == ATTACK and self.player_sprite.attack_dir is not None:
                 # attack στάσιμο -> STOP
                 move_dir = None
 
-            elif s == WALK_ATTACK:
-                # walk_attack -> κίνηση ΜΟΝΟ μπροστά (locked)
+            elif s == WALK_ATTACK and self.player_sprite.attack_dir is not None:
+                # walk_attack -> κίνηση ΜΟΝΟ μπροστά
                 move_dir = self.dir_to_move_str(self.player_sprite.attack_dir)
 
             else:
@@ -853,7 +842,7 @@ class MyGame(arcade.View):
                             move_dir = "RIGHT"
                         break
 
-            # στείλε μόνο αν άλλαξε (για να μη spamάρεις)
+            # στείλε μόνο αν άλλαξε
             # αν δεν υπάρχει κίνηση -> στείλε STOP (1 φορά)
             if move_dir is None:
                 if self.last_sent_move is not None:
@@ -864,43 +853,120 @@ class MyGame(arcade.View):
                     self.last_sent_move = move_dir
                     asyncio.run_coroutine_threadsafe(send_move(move_dir), NETWORK_LOOP)
 
-        # Ενημέρωση animation τοπικού παίκτη
+        if self.player_sprite:
+            active_attack = (
+                self.player_sprite.state in (ATTACK, WALK_ATTACK)
+                and self.player_sprite.attack_dir is not None
+            )
+
+            if (
+                not active_attack
+                and not getattr(self.player_sprite, "death_started", False)
+            ):
+                current_move_dir = self.get_current_move_dir()
+
+                if current_move_dir is not None:
+                    self.player_sprite.last_direction = current_move_dir
+                    self.player_sprite.set_base_state(WALK, current_move_dir)
+                else:
+                    self.player_sprite.set_base_state(IDLE, self.player_sprite.last_direction)
+
+        # Ενημέρωση animation παίκτη
         if self.player_sprite:
             self.player_sprite.update_animation(delta_time)
 
             if getattr(self.player_sprite, "despawn", False):
                 self.player_sprite.remove_from_sprite_lists()
 
-            # --- Consume attack buffer (Case C) ---
+            # Consume attack buffer
             if self.player_sprite.attack_finished:
                 self.player_sprite.attack_finished = False
 
+                # Αν ο παίκτης πάτησε ξανά attack όσο το προηγούμενο attack animation ήταν ακόμα ενεργό,
+                # τότε έχουμε αποθηκεύσει αυτό το input στο attack_buffered
                 if self.attack_buffered:
-                    self.attack_buffered = False
-                    next_state = getattr(self, "buffer_attack_state", None) or ATTACK
-                    self.buffer_attack_state = None
+                    now = time.time()
 
-                    self.player_sprite.attack_dir = self.player_sprite.last_direction
-                    self.player_sprite.base_state = next_state
-                    self.player_sprite.base_direction = self.player_sprite.attack_dir
-                    self.player_sprite.force_state(next_state, self.player_sprite.attack_dir, reset=True)
+                    if now < self.local_next_attack_time:
+                        self.attack_buffered = False
+                        self.buffer_attack_state = None
+                        self.player_sprite.attack_dir = None
+
+                        move_dir = self.get_current_move_dir()
+
+                        if move_dir is not None:
+                            self.player_sprite.last_direction = move_dir
+                            self.player_sprite.base_state = WALK
+                            self.player_sprite.base_direction = move_dir
+                            self.player_sprite.force_state(WALK, move_dir, reset=True)
+                        else:
+                            self.player_sprite.base_state = IDLE
+                            self.player_sprite.base_direction = self.player_sprite.last_direction
+                            self.player_sprite.force_state(IDLE, self.player_sprite.last_direction, reset=True)
+
+                    else:
+                        self.attack_buffered = False
+                        next_state = getattr(self, "buffer_attack_state", None) or ATTACK   # Παίρνουμε το επόμενο attack state που είχε αποθηκευτεί
+                        self.buffer_attack_state = None     # Καθαρίζουμε το αποθηκευμένο state αφού το χρησιμοποιήσαμε
+
+                        self.local_next_attack_time = now + self.local_attack_cooldown
+
+                        current_move_dir = self.get_current_move_dir()
+                        self.player_sprite.attack_dir = current_move_dir or self.player_sprite.last_direction   # Κλειδώνουμε την κατεύθυνση του νέου attack στην τελευταία κατεύθυνση του παίκτη
+                        self.player_sprite.last_direction = self.player_sprite.attack_dir
+                        
+                        self.player_sprite.base_state = next_state  # Ενημερώνουμε το base state ώστε, όσο το attack είναι ενεργό, το sprite να θεωρεί ως κύρια κατάσταση το νέο attack
+                        self.player_sprite.base_direction = self.player_sprite.attack_dir
+                        self.player_sprite.force_state(next_state, self.player_sprite.attack_dir, reset=True)   # Αναγκάζουμε το sprite να ξεκινήσει αμέσως το νέο attack animation από το frame 0
+
+                        # Στέλνουμε το buffered attack στον server
+                        if NETWORK_LOOP is not None:
+                            dir_str = self.dir_to_move_str(self.player_sprite.attack_dir)
+                            if dir_str is not None:
+                                asyncio.run_coroutine_threadsafe(send_attack(dir_str), NETWORK_LOOP)
 
                 else:
-                    self.player_sprite.attack_dir = None
+                    self.player_sprite.attack_dir = None    # Αν δεν υπάρχει buffered attack, τότε ο παίκτης δεν έχει ζητήσει νέο χτύπημα και ξεκλειδώνουμε την attack direction
+                    self.player_sprite.attack_finished = False
+                    move_dir = self.get_current_move_dir()
 
-                    if self.held_move:
-                        self.player_sprite.set_base_state(WALK, self.player_sprite.last_direction)
+                    if move_dir is not None:
+                        self.player_sprite.last_direction = move_dir
+                        self.player_sprite.base_state = WALK
+                        self.player_sprite.base_direction = move_dir
+                        self.player_sprite.force_state(WALK, move_dir, reset=True)
                     else:
-                        self.player_sprite.set_base_state(IDLE, self.player_sprite.last_direction)
+                        self.player_sprite.base_state = IDLE
+                        self.player_sprite.base_direction = self.player_sprite.last_direction
+                        self.player_sprite.force_state(IDLE, self.player_sprite.last_direction, reset=True)
 
         # Ενημέρωση animation άλλων παικτών
         for spr in self.other_sprites.values():
             spr.update_animation(delta_time)
 
+        # Ενημέρωση animation εχθρών
         for e in list(self.enemy_list):
             e.update_animation(delta_time)
-            if getattr(e, "despawn", False):
+
+            self.spawn_enemy_projectile_if_needed(e)    # Αν ο enemy είναι ranged, ελέγχουμε αν βρίσκεται στο σωστό attack frame ώστε να δημιουργηθεί projectile
+
+            if getattr(e, "despawn", False):    # Αν έχει τελειώσει το death animation και έχει περάσει το hold time, το EnemySprite κάνει despawn
                 e.remove_from_sprite_lists()
+
+        # Ενημέρωση enemy projectiles
+        self.enemy_projectiles.update() 
+
+        # Διατρέχουμε όλα τα ενεργά enemy projectiles
+        for projectile in list(self.enemy_projectiles):
+            projectile.update_animation(delta_time)
+
+            # Σύγκρουση projectile με παίκτη
+            if self.player_sprite and arcade.check_for_collision(projectile, self.player_sprite):
+                projectile.remove_from_sprite_lists()
+                continue
+
+            if getattr(projectile, "remove_me", False): # Αν το projectile έχει φτάσει το max_range του, το αφαιρούμε
+                projectile.remove_from_sprite_lists()
             
         # Ενημέρωση κάμερας
         self.update_camera()
@@ -911,39 +977,146 @@ class MyGame(arcade.View):
                 self.region_message_timer = 0
                 self.region_message = ""
 
+    def get_current_move_dir(self):
+        # Επιστρέφει την τελευταία πατημένη WASD κατεύθυνση που κρατιέται ακόμα.
+        for k in reversed(self.move_order):
+            if k in self.held_move:
+                if k == arcade.key.W:
+                    return UP
+                elif k == arcade.key.S:
+                    return DOWN
+                elif k == arcade.key.A:
+                    return LEFT
+                elif k == arcade.key.D:
+                    return RIGHT
+
+        return None
+    
+    # Μέθοδος για τα projectile των ranged εχθρών
+    def spawn_enemy_projectile_if_needed(self, enemy: EnemySprite):
+        enemy_def = get_enemy_type_defs(enemy.enemy_type)
+
+        if enemy_def.get("attack_type") != "ranged":    # Θέλουμε μόνο ranged χαρακτήρες
+            return
+
+        if enemy.state not in (ATTACK, WALK_ATTACK):    # Το projectile πρέπει να δημιουργείται μόνο όταν ο enemy βρίσκεται σε attack animation
+            return
+
+        if enemy.projectile_spawned:    # Κάθε attack animation έχει μόνο ένα projectile
+            return
+
+        spawn_frame = enemy_def.get("projectile_spawn_frame", 7)    # Frame του attack animation στο οποίο θα εμφανιστεί το projectile
+
+        if enemy.cur_frame < spawn_frame:   # Αν το animation δεν έχει φτάσει ακόμα στο κατάλληλο frame, περιμένουμε
+            return
+
+        projectile_type = enemy_def.get("projectile_type")
+        if projectile_type is None:
+            return
+
+        if projectile_type not in self.projectile_animation_dict:
+            self.projectile_animation_dict[projectile_type] = load_projectile_animations(projectile_type)
+
+        projectile_cfg = PROJECTILE_ANIMATION_CONFIGS[projectile_type]  # Παίρνουμε το config του projectile
+
+        # Δημιουργία του projectile sprite
+        projectile = ProjectileSprite(
+            animations=self.projectile_animation_dict[projectile_type],
+            direction=enemy.direction,
+            speed=enemy_def.get("projectile_speed", 7.0),
+            damage=enemy_def.get("damage", 1),
+            max_range=enemy_def.get("projectile_range", 260),
+            scale=projectile_cfg.get("scale", 2.0),
+        )
+
+        # Η επίθεση του goblin έρχεται λίγο πάνω από το κέντρο του σώματός του
+        projectile.center_x = enemy.center_x
+        projectile.center_y = enemy.center_y + 15
+
+        self.enemy_projectiles.append(projectile)
+
+        enemy.projectile_spawned = True
+
     def is_moving_input(self):
         return len(self.held_move) > 0   # ή self.last_sent_move is not None
 
     def on_key_press(self, key, modifiers):
-        # (Optional) Ignore direction changes while attacking
-        if self.player_sprite and self.player_sprite.state in (ATTACK, WALK_ATTACK):
-            if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
-                return
-        # --- ATTACK (SPACE): Case C (lock + 1 buffer) ---
+        # Movement keys (μόνο WASD) last pressed wins
+        # Τα καταγράφουμε ΠΑΝΤΑ, ακόμα και αν ο παίκτης είναι σε attack.
+        # Το attack lock θα γίνει στο on_update, όχι εδώ.
+        if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
+            self.held_move.add(key)
+
+            # κάνε το key "τελευταίο" στη σειρά
+            if key in self.move_order:
+                self.move_order.remove(key)
+            self.move_order.append(key)
+
+            # Άμεση αλλαγή facing direction για τον local player
+            if self.player_sprite:
+                if key == arcade.key.W:
+                    direction = UP
+                elif key == arcade.key.S:
+                    direction = DOWN
+                elif key == arcade.key.A:
+                    direction = LEFT
+                elif key == arcade.key.D:
+                    direction = RIGHT
+
+                active_attack = (
+                    self.player_sprite.state in (ATTACK, WALK_ATTACK)
+                    and self.player_sprite.attack_dir is not None
+                )
+
+                if (
+                    not active_attack
+                    and not getattr(self.player_sprite, "death_started", False)
+                ):
+                    self.player_sprite.last_direction = direction
+                    self.player_sprite.base_state = WALK
+                    self.player_sprite.base_direction = direction
+                    self.player_sprite.force_state(WALK, direction, reset=False)
+
+            return
+    
+        # ATTACK (SPACE) (lock + 1 buffer)
         if key == arcade.key.SPACE and self.player_sprite:
+            now = time.time()
             spr = self.player_sprite
 
+            # Αν ο παίκτης είναι νεκρός, δεν μπορεί να επιτεθεί
             if spr.state == DEATH or getattr(spr, "death_started", False):
                 return
 
             attack_state = WALK_ATTACK if self.is_moving_input() else ATTACK
 
-            # Αν ήδη κάνει attack -> buffer μόνο κοντά στο τέλος
-            if spr.state in (ATTACK, WALK_ATTACK):
+            # Αν ήδη παίζει attack animation, δεν ξεκινάμε νέο attack αμέσως. Επιτρέπουμε μόνο 1 buffered attack κοντά στο τέλος του animation
+            active_attack = spr.state in (ATTACK, WALK_ATTACK) and spr.attack_dir is not None
+
+            if active_attack:
                 frames = spr.animations[spr.state][spr.direction]
                 progress = spr.cur_frame / (len(frames) - 1) if len(frames) > 1 else 1.0
 
-                if progress >= self.attack_buffer_threshold:
+                if progress >= self.attack_buffer_threshold and not self.attack_buffered:
                     self.attack_buffered = True
                     self.buffer_attack_state = attack_state
+
+                return
+            
+            if now < self.local_next_attack_time:
                 return
 
-            # Ξεκίνα νέο attack τώρα
+            # Ξεκινάμε νέο attack τώρα
+            self.local_next_attack_time = now + self.local_attack_cooldown
+
             self.attack_buffered = False
             self.buffer_attack_state = None
 
             # LOCK direction για ΟΛΟ το attack
-            spr.attack_dir = spr.last_direction
+            current_move_dir = self.get_current_move_dir()
+            spr.attack_dir = current_move_dir or spr.last_direction
+            spr.last_direction = spr.attack_dir
+
             spr.base_state = attack_state
             spr.base_direction = spr.attack_dir
             spr.force_state(attack_state, spr.attack_dir, reset=True)
@@ -955,16 +1128,6 @@ class MyGame(arcade.View):
 
             return
 
-    # Movement keys (μόνο WASD) - last pressed wins
-        if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
-            self.held_move.add(key)
-
-            # κάνε το key "τελευταίο" στη σειρά
-            if key in self.move_order:
-                self.move_order.remove(key)
-            self.move_order.append(key)
-            return
-
         # Όλα τα άλλα keys (spells κλπ) επιτρέπονται ταυτόχρονα
         self.held_keys.add(key)
 
@@ -972,8 +1135,32 @@ class MyGame(arcade.View):
         # Movement keys (μόνο WASD)
         if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
             self.held_move.discard(key)
+
             if key in self.move_order:
                 self.move_order.remove(key)
+
+            if self.player_sprite:
+                active_attack = (
+                    self.player_sprite.state in (ATTACK, WALK_ATTACK)
+                    and self.player_sprite.attack_dir is not None
+                )
+
+                if (
+                    not active_attack
+                    and not getattr(self.player_sprite, "death_started", False)
+                ):
+                    move_dir = self.get_current_move_dir()
+
+                    if move_dir is not None:
+                        self.player_sprite.last_direction = move_dir
+                        self.player_sprite.base_state = WALK
+                        self.player_sprite.base_direction = move_dir
+                        self.player_sprite.force_state(WALK, move_dir, reset=False)
+                    else:
+                        self.player_sprite.base_state = IDLE
+                        self.player_sprite.base_direction = self.player_sprite.last_direction
+                        self.player_sprite.force_state(IDLE, self.player_sprite.last_direction, reset=False)
+
             return
 
         # Άλλα keys (spells κλπ)

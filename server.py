@@ -35,6 +35,19 @@ STUCK_THRESHOLD = 1.0     # δευτερόλεπτα χωρίς ουσιαστι
 UNSTUCK_DURATION = 0.8    # διάρκεια κίνησης για ξεκόλλημα
 MIN_PROGRESS_PX = 0.6     # ελάχιστη μετακίνηση σε pixels ώστε να θεωρηθεί πρόοδος
 
+PLAYER_ANIM_FRAME_TIME = 0.12
+
+PLAYER_ATTACK_ANIM_FRAMES = {
+    "Warrior": {
+        "attack": 8,
+        "walk_attack": 6,
+    },
+    "Mage": {
+        "attack": 5,
+        "walk_attack": 5,
+    },
+}
+
 server_start_time = time.time() # Χρόνος εκκίνησης server
 
 ctx = zmq.asyncio.Context()     # Δημιουργία του zmq context για τη σύνδεση με τα sockets
@@ -93,6 +106,7 @@ for region_name, region in regions.items():
             "resist": defs["resist"],
             "attack_speed": defs["attack_speed"],
             "move_speed": defs["move_speed"],
+            "attack_type": defs.get("attack_type", "melee"),
 
             # Διαστάσεις hitbox
             "hitbox_w": defs["hitbox_w"],
@@ -248,6 +262,16 @@ def try_player_transition(player):
 
             print(f"Player {player['nickname']} transitioned to {target_region_name} at spawn {target_spawn_name}")
             return
+        
+def get_player_attack_anim_duration(class_name, attack_state):
+    frames_by_state = PLAYER_ATTACK_ANIM_FRAMES.get(class_name)
+
+    if frames_by_state is None:
+        return 0.60
+
+    frames = frames_by_state.get(attack_state, frames_by_state.get("attack", 5))
+
+    return frames * PLAYER_ANIM_FRAME_TIME
 
 # Μέθοδος που ελέγχει αν ο παίκτης ή ο εχθρός βρίσκεται πάνω σε γέφυρα
 def on_bridge(region_name, x, y, w, h):
@@ -393,6 +417,31 @@ def dir_from_delta(dx, dy):
         return "right" if dx > 0 else "left"
     else:
         return "up" if dy > 0 else "down"
+    
+def target_in_directional_range(e, p):
+    # Υπολογίζουμε τη θέση του παίκτη ως προς τον εχθρό
+    dx = p["x"] - e["x"]
+    dy = p["y"] - e["y"]
+
+    direction = e.get("dir", "down")            # Η κατεύθυνση στην οποία κοιτάει ο εχθρός
+    attack_range = e.get("attack_range", 64)    # Η μέγιστη απόσταση που μπορεί να φτάσει η επίθεση
+
+    lane_half_width = 28    # Το projectile χτυπάει σε μία γραμμή μπροστά από τον εχθρό
+
+    # Υπολογισμός κατεύθυνσης για το projectile
+    if direction == "right":
+        return dx > 0 and dx <= attack_range and abs(dy) <= lane_half_width
+
+    if direction == "left":
+        return dx < 0 and abs(dx) <= attack_range and abs(dy) <= lane_half_width
+
+    if direction == "up":
+        return dy > 0 and dy <= attack_range and abs(dx) <= lane_half_width
+
+    if direction == "down":
+        return dy < 0 and abs(dy) <= attack_range and abs(dx) <= lane_half_width
+
+    return False
 
 # Μέθοδος που υπολογίζει την κατεύθυνση του εχθρού προς τον στόχο και καλεί τη μέθοδο κίνησης
 def move_enemy_towards_target(e, target_x, target_y):
@@ -517,10 +566,33 @@ def update_enemy_chase_and_movement():
                 nearest_d = d
                 nearest_pid = pid
 
-        # Αν δεν έχει ήδη στόχο, στοχεύει τον κοντινότερο παίκτη αν είναι μέσα στο aggro radius
-        if e["target"] is None:
-            if nearest_pid is not None and nearest_d <= e["aggro_radius"]:
+        # Αν υπάρχει κοντινότερος παίκτης μέσα στο aggro radius, ο εχθρός μπορεί να αλλάξει focus σε αυτόν
+        if nearest_pid is not None and nearest_d <= e["aggro_radius"]:
+            current_target = e.get("target")
+
+            if current_target is None:      # Αν ο εχθρός δεν έχει στόχο, στοχεύει τον κοντινότερο παίκτη
                 e["target"] = nearest_pid
+
+            elif current_target in players:     # Αν ο εχθρός έχει ήδη στόχο, τότε συγκρίνουμε τον τωρινό στόχο με τον νέο κοντινότερο παίκτη
+                current_player = players[current_target]
+
+                if (    # Αν ο τωρινός στόχος πέθανε ή άλλαξε περιοχή, ο εχθρός αλλάζει στόχο στον κοντινότερο διαθέσιμο παίκτη
+                    current_player.get("dead", False)
+                    or current_player.get("region") != e["region"]
+                ):
+                    e["target"] = nearest_pid
+                    e["pending_hit_time"] = 0.0
+
+                else:
+                    current_d = dist(e["x"], e["y"], current_player["x"], current_player["y"])   # Υπολογίζουμε την απόσταση του εχθρού από τον τωρινό στόχο
+
+                    # Τιμή όριο για να μην γίνεται αλλαγή στόχων συνεχώς σε πολύ κοντινές αποστάσεις
+                    switch_margin = 20
+
+                     # Αν ο κοντινότερος παίκτης δεν είναι ο τωρινός στόχος και ο στόχος είναι πιο μακριά, τότε ο εχθρός αλλάζει focus στον κοντινότερο
+                    if nearest_pid != current_target and nearest_d + switch_margin < current_d:
+                        e["target"] = nearest_pid
+                        e["pending_hit_time"] = 0.0
 
         # Απώλεια στόχου
         if e["target"] is not None:
@@ -542,15 +614,29 @@ def update_enemy_chase_and_movement():
             d = dist(e["x"], e["y"], tp["x"], tp["y"])
 
             # Αν ο στόχος είναι εντός attack range, ο εχθρός επιτίθεται
-            if d <= e["attack_range"]:
-                e["state"] = "attack"
+            attack_type = e.get("attack_type", "melee")
+
+            if attack_type == "ranged":
                 e["dir"] = dir_from_delta(tp["x"] - e["x"], tp["y"] - e["y"])
-                e["unstuck_until"] = 0.0    # Επαναφορά unstuck mode
-            
-            # Αλλιώς κινείται προς τον στόχο
+
+                # Ο ranged enemy επιτίθεται μόνο αν ο στόχος είναι στη σωστή ευθεία/lane.
+                if target_in_directional_range(e, tp):
+                    e["state"] = "attack"
+                    e["unstuck_until"] = 0.0
+                else:
+                    e["state"] = "walk"
+                    move_enemy_towards_target(e, tp["x"], tp["y"])
+
             else:
-                e["state"] = "walk"
-                move_enemy_towards_target(e, tp["x"], tp["y"])
+                if d <= e["attack_range"]:
+                    e["state"] = "attack"
+                    e["dir"] = dir_from_delta(tp["x"] - e["x"], tp["y"] - e["y"])
+                    e["unstuck_until"] = 0.0    # Επαναφορά unstuck mode
+                
+                # Αλλιώς κινείται προς τον στόχο
+                else:
+                    e["state"] = "walk"
+                    move_enemy_towards_target(e, tp["x"], tp["y"])
         else:
              # Αν δεν υπάρχει στόχος, ο εχθρός επιστρέφει στο αρχικό spawn point
             sx, sy = e["spawn_x"], e["spawn_y"]
@@ -643,9 +729,16 @@ def apply_enemy_attacks():
         if now >= e["pending_hit_time"]:
             e["pending_hit_time"] = 0.0
 
-            # Τελικός έλεγχος ότι ο παίκτης είναι ακόμα εντός εμβέλειας
-            d2 = dist(e["x"], e["y"], tp["x"], tp["y"])
-            if d2 <= e["attack_range"]:
+            # Τελικός έλεγχος ότι ο παίκτης είναι ακόμα έγκυρος στόχος
+            attack_type = e.get("attack_type", "melee")
+
+            if attack_type == "ranged":
+                can_hit = target_in_directional_range(e, tp)
+            else:
+                d2 = dist(e["x"], e["y"], tp["x"], tp["y"])
+                can_hit = d2 <= e["attack_range"]
+
+            if can_hit:
                 # Υπολογισμός τελικής ζημιάς μετά το resist του παίκτη
                 player_resist = tp.get("resist", 0)
                 dmg = max(0, e["damage"] - player_resist)
@@ -785,6 +878,20 @@ async def handle_inputs():
             if players[pid].get("dead", False):
                 continue
 
+            now = time.time()
+
+            # Αν υπάρχει ήδη attack request που δεν έχει επεξεργαστεί ακόμα,
+            # αγνοούμε επιπλέον attack inputs για να μην ανανεώνεται συνέχεια το animation lock.
+            if players[pid].get("attack_requested", False):
+                continue
+
+            # Αν ο παίκτης είναι ακόμα σε cooldown,
+            # δεν αλλάζουμε ούτε state ούτε attack_anim_until.
+            # Έτσι δεν κολλάει ο παίκτης σε attack animation χωρίς πραγματικό hit.
+            if now < players[pid].get("next_attack_time", 0.0):
+                players[pid]["attack_requested"] = False
+                continue
+
             # Κατεύθυνση επίθεσης
             adir = msg.get("dir", "DOWN")
 
@@ -796,14 +903,17 @@ async def handle_inputs():
             move_dir = players[pid].get("move_dir", "STOP")
             attack_state = "walk_attack" if move_dir != "STOP" else "attack"
 
-            players[pid]["attack_requested"] = True     # Καταγράφουμε ότι ζητήθηκε επίθεση
-            players[pid]["attack_dir"] = adir.lower()   # Αποθηκεύουμε την κατεύθυνση επίθεσης σε lowercase για το animation/state   
+            players[pid]["attack_requested"] = True
+            players[pid]["attack_dir"] = adir.lower()
             players[pid]["dir"] = adir.lower()
 
-            players[pid]["state"] = attack_state        # Ενημέρωση κατάστασης animation επίθεσης
+            players[pid]["state"] = attack_state
             players[pid]["attack_state"] = attack_state
 
-            players[pid]["attack_anim_until"] = time.time() + 0.45  # Χρόνος μέχρι τον οποίο θα διαρκεί το attack animation
+            class_name = players[pid].get("class_name", "Warrior")
+            anim_duration = get_player_attack_anim_duration(class_name, attack_state)
+
+            players[pid]["attack_anim_until"] = now + anim_duration
 
 # Μέθοδος που ενημερώνει και μεταδίδει συνεχώς την κατάσταση του παιχνιδιού
 async def broadcast_state():
