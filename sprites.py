@@ -1,18 +1,31 @@
 import arcade
 import time
+from stats import (
+    ENEMY_ANIMATION_CONFIGS,
+    ENEMY_FAMILIES,
+    ENEMY_TYPES,
+    XP_REQUIREMENTS,
+    PLAYER_TYPES,
+)
 
-# Ρυθμίσεις Sprite sheet 
+# Διαστάσεις frame για τα sprite sheets παικτών και απλών εχθρών
 FRAME_W = 64    # Πλάτος frame στο sprite sheet
 FRAME_H = 64    # Ύψος frame στο sprite sheet
 
 PROJECTILE_FRAME_W = 48 # Πλάτος frame στο projectile
 PROJECTILE_FRAME_H = 48 # Ύψος frame στο projectile
 
+# Διαστάσεις frame για dragon sprite sheets
+DRAGON_FRAME_W = 256
+DRAGON_FRAME_H = 256
+
+# Κατευθύνσεις
 DOWN  = "down"
 LEFT  = "left"
 RIGHT = "right"
 UP    = "up"
 
+# Καταστάσεις (state) παικτών/απλών εχθρών
 IDLE = "idle"
 WALK = "walk"
 ATTACK = "attack"
@@ -20,13 +33,41 @@ HURT = "hurt"
 DEATH = "death"
 WALK_ATTACK = "walk_attack"
 
-# Κλίμακα sprite στο παιχνίδι
+# Επιπλέον καταστάσεις για εχθρούς δράκους
+RISE = "rise"
+FLIGHT = "flight"
+LANDING = "landing"
+ATTACK_ON_AIR = "attack_on_air"
+
+# Κλίμακα εμφάνισης των player sprites μέσα στο παιχνίδι
+# Κάθε κλάση έχει διαφορετικό scale ώστε τα sprites να φαίνονται οπτικά ισορροπημένα
 CLASS_SCALES = {
-    "Warrior": 2.0,
+    "Warrior": 1.75,
     "Mage": 1.75,
+    "Marksman": 2.1,
 }
 
-# Φόρτωμα projectiles 
+# Κλίμακα εμφάνισης των enemy sprites
+# Οι dragons έχουν μικρότερο scale γιατί τα αρχικά frames τους είναι πολύ μεγαλύτερα
+ENEMY_SCALES = {
+    "orc": 1.9,
+    "orc2": 1.9,
+    "orc3": 1.9,
+
+    "wolf": 1.9,
+    "wolf2": 1.9,
+    "wolf3": 1.9,
+
+    "magic_goblin": 1.9,
+    "magic_goblin2": 1.9,
+    "magic_goblin3": 1.9,
+
+    "dragon": 1.25,
+    "dragon2": 1.25,
+}
+
+# Ρυθμίσεις για τα projectile animations
+# Ορίζουν το αρχείο εικόνας, τα frames ανά κατεύθυνση, τις στήλες του sprite sheet και το scale
 PROJECTILE_ANIMATION_CONFIGS = {
     "magic_goblin_projectile": {
         "path": "assets/projectiles/magic_goblin_projectile.png",
@@ -36,218 +77,32 @@ PROJECTILE_ANIMATION_CONFIGS = {
     }
 }
 
-# Frames για τα state του κάθε εχθρού
-ENEMY_ANIMATION_CONFIGS = {
-    "orc": {
-        "idle": 4,
-        "walk": 6,
-        "hurt": 6,
-        "attack": 8,
-        "death": 8,
-        "walk_attack": 6,
-    },
+# Φορτώνει frames από dragon sprite sheet
+# Οι dragons έχουν διαφορετικό μέγεθος frame από τους υπόλοιπους χαρακτήρες
+def dragon_sheet_grid(path, columns, count):
+    sheet = arcade.SpriteSheet(path)
+    return sheet.get_texture_grid(
+        size=(DRAGON_FRAME_W, DRAGON_FRAME_H),
+        columns=columns,
+        count=count
+    )
 
-    "wolf": {
-        "idle": 4,
-        "walk": 6,
-        "hurt": 4,
-        "attack": 10,
-        "death": 6,
-        "walk_attack": None,
-    },
+# Χωρίζει τα dragon frames σε κατευθύνσεις
+# Τα dragon sprite sheets έχουν μόνο δύο κατευθύνσεις, δεξιά και αριστερά
+def split_dragon_dirs(frames, frames_per_dir):
+    right_frames = frames[0:frames_per_dir]
+    left_frames = frames[frames_per_dir:frames_per_dir * 2]
 
-    "magic_goblin": {
-        "idle": 4,
-        "walk": 6,
-        "hurt": 4,
-        "attack": 8,
-        "death": 10,
-        "walk_attack": None,
-    },
-}
+    return {
+        RIGHT: right_frames,
+        LEFT: left_frames,
 
-# Κατηγορίες εχθρών
-ENEMY_FAMILIES = {
-    "orc": "orc",
-    "orc2": "orc",
-    "orc3": "orc",
+        # Fallback ώστε να μη γίνει error αν ζητηθεί up/down από τον κώδικα
+        UP: right_frames,
+        DOWN: right_frames,
+    }
 
-    "wolf": "wolf",
-    "wolf2": "wolf",
-    "wolf3": "wolf",
-
-    "magic_goblin": "magic_goblin",
-    "magic_goblin2": "magic_goblin",
-    "magic_goblin3": "magic_goblin",
-}
-
-# Τύποοι εχθρών και στατιστικά που έχουν
-ENEMY_TYPES = {
-
-    "orc": {
-        # Core stats
-        "hp_max": 120,
-        "damage": 15,
-        "resist": 10,
-        "attack_speed": 1,   # attacks per second
-        "move_speed": 3.2,
-
-        # Collision 
-        "hitbox_w": 46,
-        "hitbox_h": 72,
-
-        # Combat range (pixels)
-        "aggro_radius": 240,
-        "lose_radius": 320,
-        "attack_range": 64,    # ~1 tile
-
-        # Timing
-        "windup": 0.45,        # seconds μέχρι να γίνει το hit
-        "tier": 1,
-        "attack_type": "melee"
-    },
-
-    "orc2": {
-        "hp_max": 170,
-        "damage": 23,
-        "resist": 15,
-        "attack_speed": 1,
-        "move_speed": 3.3,
-        "hitbox_w": 46,
-        "hitbox_h": 72,
-        "aggro_radius": 260,
-        "lose_radius": 340,
-        "attack_range": 64,
-        "windup": 0.42,
-        "tier": 2,
-        "attack_type": "melee"
-    },
-
-    "orc3": {
-        "hp_max": 240,
-        "damage": 32,
-        "resist": 22,
-        "attack_speed": 1.1,
-        "move_speed": 3.5,
-        "hitbox_w": 46,
-        "hitbox_h": 72,
-        "aggro_radius": 280,
-        "lose_radius": 360,
-        "attack_range": 70,
-        "windup": 0.38,
-        "tier": 3,
-        "attack_type": "melee"
-    },
-
-    "wolf": {
-        "hp_max": 70,
-        "damage": 10,
-        "resist": 3,
-        "attack_speed": 1.2,
-        "move_speed": 4.2,
-        "hitbox_w": 46,
-        "hitbox_h": 72,
-        "aggro_radius": 260,
-        "lose_radius": 340,
-        "attack_range": 50,
-        "windup": 0.30,
-        "tier": 1,
-        "attack_type": "melee"
-    },
-
-    "wolf2": {
-        "hp_max": 100,
-        "damage": 15,
-        "resist": 5,
-        "attack_speed": 1.3,
-        "move_speed": 4.5,
-        "hitbox_w": 46,
-        "hitbox_h": 72,
-        "aggro_radius": 280,
-        "lose_radius": 360,
-        "attack_range": 54,
-        "windup": 0.28,
-        "tier": 2,
-        "attack_type": "melee"
-    },
-
-    "wolf3": {
-        "hp_max": 140,
-        "damage": 21,
-        "resist": 8,
-        "attack_speed": 1.4,
-        "move_speed": 4.8,
-        "hitbox_w": 46,
-        "hitbox_h": 72,
-        "aggro_radius": 300,
-        "lose_radius": 380,
-        "attack_range": 58,
-        "windup": 0.25,
-        "tier": 3,
-        "attack_type": "melee"
-    },
-
-    "magic_goblin": {
-        "hp_max": 65,
-        "damage": 12,
-        "resist": 4,
-        "attack_speed": 0.8,
-        "move_speed": 3.0,
-        "hitbox_w": 40,
-        "hitbox_h": 58,
-        "aggro_radius": 300,
-        "lose_radius": 390,
-        "attack_range": 260,
-        "windup": 0.55,
-        "tier": 1,
-        "attack_type": "ranged",
-        "projectile_type": "magic_goblin_projectile",
-        "projectile_speed": 7.0,
-        "projectile_range": 260,
-        "projectile_spawn_frame": 4,
-    },
-
-    "magic_goblin2": {
-        "hp_max": 90,
-        "damage": 18,
-        "resist": 6,
-        "attack_speed": 0.85,
-        "move_speed": 3.1,
-        "hitbox_w": 40,
-        "hitbox_h": 58,
-        "aggro_radius": 330,
-        "lose_radius": 420,
-        "attack_range": 260,
-        "windup": 0.50,
-        "tier": 2,
-        "attack_type": "ranged",
-        "projectile_type": "magic_goblin_projectile",
-        "projectile_speed": 7.5,
-        "projectile_range": 300,
-        "projectile_spawn_frame": 4,
-    },
-
-    "magic_goblin3": {
-        "hp_max": 125,
-        "damage": 25,
-        "resist": 9,
-        "attack_speed": 0.9,
-        "move_speed": 3.2,
-        "hitbox_w": 42,
-        "hitbox_h": 60,
-        "aggro_radius": 360,
-        "lose_radius": 450,
-        "attack_range": 260,
-        "windup": 0.45,
-        "tier": 3,
-        "attack_type": "ranged",
-        "projectile_type": "magic_goblin_projectile",
-        "projectile_speed": 8.0,
-        "projectile_range": 340,
-        "projectile_spawn_frame": 4,
-    },
-}
-
+# Φορτώνει frames από projectile sprite sheet με βάση τις διαστάσεις frame
 def projectile_sheet_grid(path, frame_w, frame_h, columns, count):
     sheet = arcade.SpriteSheet(path)
     return sheet.get_texture_grid(
@@ -256,6 +111,7 @@ def projectile_sheet_grid(path, frame_w, frame_h, columns, count):
         count=count
     )
 
+# Φορτώνει τα animations ενός projectile και τα χωρίζει σε 4 κατευθύνσεις
 def load_projectile_animations(projectile_type):
     if projectile_type not in PROJECTILE_ANIMATION_CONFIGS:
         raise ValueError(f"Unknown projectile type: {projectile_type}")
@@ -265,6 +121,7 @@ def load_projectile_animations(projectile_type):
     frames_per_dir = cfg["frames_per_dir"]
     total_frames = frames_per_dir * 4
 
+    # Φορτώνουμε όλα τα frames του projectile από το sprite sheet
     frames = projectile_sheet_grid(
         cfg["path"],
         PROJECTILE_FRAME_W,
@@ -273,13 +130,21 @@ def load_projectile_animations(projectile_type):
         total_frames
     )
 
-    return split_dirs(frames, frames_per_dir)
+    return split_dirs(frames, frames_per_dir)   # Επιστρέφουμε dictionary με frames ανά κατεύθυνση
 
+# Επιστρέφει τα στατιστικά ενός εχθρού από το stats.py
 def get_enemy_type_defs(enemy_type: str):
     if enemy_type not in ENEMY_TYPES:
         raise ValueError(f"Unknown enemy type: {enemy_type}")
     return ENEMY_TYPES[enemy_type]
 
+# Επιστρέφει τα στατιστικά ενός παίκτη από το stats.py
+def get_player_type_defs(class_name: str):
+    if class_name not in PLAYER_TYPES:
+        raise ValueError(f"Unknown player class: {class_name}")
+    return PLAYER_TYPES[class_name]
+
+# Φορτώνει frames από κανονικό sprite sheet 64x64
 def sheet_grid(path, columns, count):
     sheet = arcade.SpriteSheet(path)
     return sheet.get_texture_grid(
@@ -288,6 +153,17 @@ def sheet_grid(path, columns, count):
         count=count
     )
 
+# Φορτώνει frames για τον Marksman, ο οποίος έχει διαφορετικό frame size
+def marksman_sheet_grid(path, columns, count):
+    sheet = arcade.SpriteSheet(path)
+    return sheet.get_texture_grid(
+        size=(48, 64),
+        columns=columns,
+        count=count
+    )
+
+# Χωρίζει ένα sprite sheet 4 κατευθύνσεων σε DOWN, UP, LEFT, RIGHT
+# Κάθε κατεύθυνση έχει frames_per_dir frames
 def split_dirs(frames, frames_per_dir):
     return {
         DOWN: frames[0:frames_per_dir],
@@ -296,58 +172,79 @@ def split_dirs(frames, frames_per_dir):
         RIGHT: frames[frames_per_dir * 3:frames_per_dir * 4],
     }
 
+# Φορτώνει όλα τα animation states του Warrior και τα χωρίζει ανά κατεύθυνση
 def load_warrior_animations():
     base = "assets/classes/warrior/"
 
-    idle = sheet_grid(base+"idle.png", 12, 40)
-    walk = sheet_grid(base+"walk.png", 6, 24)
-    hurt = sheet_grid(base+"hurt.png", 5, 20)
-    atk  = sheet_grid(base+"attack.png", 8, 32)
-    dea  = sheet_grid(base+"death.png", 7, 28)
-    watk = sheet_grid(base+"walk_attack.png", 6, 24)
+    idle = sheet_grid(base+"WarriorIdle.png", 5, 20)
+    walk = sheet_grid(base+"WarriorWalk.png", 8, 32)
+    atk  = sheet_grid(base+"WarriorAttack01.png", 6, 24)
+    dea  = sheet_grid(base+"WarriorDeath.png", 5, 20)
 
     return {
-        IDLE: {DOWN: idle[0:12], LEFT: idle[12:24], RIGHT: idle[24:36], UP: idle[36:40]},
-        WALK: {DOWN: walk[0:6], LEFT: walk[6:12], RIGHT: walk[12:18], UP: walk[18:24]},
-        HURT: {DOWN: hurt[0:5], LEFT: hurt[5:10], RIGHT: hurt[10:15], UP: hurt[15:20]},
-        ATTACK:{DOWN: atk[0:8], LEFT: atk[8:16], RIGHT: atk[16:24], UP: atk[24:32]},
-        DEATH:{DOWN: dea[0:7], LEFT: dea[7:14], RIGHT: dea[14:21], UP: dea[21:28]},
-        WALK_ATTACK:{DOWN: watk[0:6], LEFT: watk[6:12], RIGHT: watk[12:18], UP: watk[18:24]},
+        IDLE: {DOWN: idle[0:5], LEFT: idle[5:10], RIGHT: idle[10:15], UP: idle[15:20]},
+        WALK: {DOWN: walk[0:8], LEFT: walk[8:16], RIGHT: walk[16:24], UP: walk[24:32]},
+        ATTACK:{DOWN: atk[0:6], LEFT: atk[6:12], RIGHT: atk[12:18], UP: atk[18:24]},
+        DEATH:{DOWN: dea[0:5], LEFT: dea[5:10], RIGHT: dea[10:15], UP: dea[15:20]},
     }
 
+# Φορτώνει όλα τα animation states του Mage και τα χωρίζει ανά κατεύθυνση.
 def load_mage_animations():
     base = "assets/classes/mage/"
 
     idle = sheet_grid(base + "MageIdle.png", 6, 24)
     walk = sheet_grid(base + "MageRun.png", 6, 24)
-    hurt = sheet_grid(base + "MageHurt.png", 4, 16)
     atk  = sheet_grid(base + "MageAttack01.png", 5, 20)
     dea  = sheet_grid(base + "MageDeath.png", 7, 28)
 
     return {
         IDLE: {DOWN: idle[0:6], LEFT: idle[6:12], RIGHT: idle[12:18], UP: idle[18:24]},
         WALK: {DOWN: walk[0:6], LEFT: walk[6:12], RIGHT: walk[12:18], UP: walk[18:24]},
-        HURT: {DOWN: hurt[0:4], LEFT: hurt[4:8], RIGHT: hurt[8:12], UP: hurt[12:16]},
         ATTACK: {DOWN: atk[0:5], LEFT: atk[5:10], RIGHT: atk[10:15], UP: atk[15:20]},
         DEATH: {DOWN: dea[0:7], LEFT: dea[7:14], RIGHT: dea[14:21], UP: dea[21:28]},
-        WALK_ATTACK: {DOWN: atk[0:5], LEFT: atk[5:10], RIGHT: atk[10:15], UP: atk[15:20]},
     }
 
+# Φορτώνει όλα τα animation states του Marksman και τα χωρίζει ανά κατεύθυνση
+def load_marksman_animations():
+    base = "assets/classes/marksman/"
+
+    idle = marksman_sheet_grid(base + "Idle_Gun.png", 8, 32)
+    walk = marksman_sheet_grid(base + "Walk_Gun.png", 8, 32)
+    atk  = marksman_sheet_grid(base + "Shooting_attack.png", 8, 32)
+    dea  = marksman_sheet_grid(base + "Death_GUN.png", 8, 32)
+
+    return {
+        IDLE: {DOWN: idle[0:8], LEFT: idle[8:16], RIGHT: idle[16:24], UP: idle[24:32]},
+        WALK: {DOWN: walk[0:8], LEFT: walk[8:16], RIGHT: walk[16:24], UP: walk[24:32]},
+        ATTACK: {DOWN: atk[0:8], LEFT: atk[8:16], RIGHT: atk[16:24], UP: atk[24:32]},
+        DEATH: {DOWN: dea[0:8], LEFT: dea[8:16], RIGHT: dea[16:24], UP: dea[24:32]},
+    }
+
+# Φορτώνει animations για enemy type
+# Αν ο enemy είναι dragon, χρησιμοποιεί ξεχωριστή μέθοδο λόγω διαφορετικών states και frame size
+# Για τους υπόλοιπους εχθρούς χρησιμοποιεί το family config από το stats.py
 def load_enemy_animations(enemy_type="orc"):
     if enemy_type not in ENEMY_FAMILIES:
         raise ValueError(f"Unknown enemy animation type: {enemy_type}")
 
     family = ENEMY_FAMILIES[enemy_type]
+
+    if family == "dragon":
+        return load_dragon_animations(enemy_type)
+
     cfg = ENEMY_ANIMATION_CONFIGS[family]
 
     base = f"assets/enemies/{enemy_type}/{enemy_type}_"
 
+    # Φόρτωση βασικών animation states του enemy
     idle = sheet_grid(base + "idle.png", cfg["idle"], cfg["idle"] * 4)
     walk = sheet_grid(base + "walk.png", cfg["walk"], cfg["walk"] * 4)
     hurt = sheet_grid(base + "hurt.png", cfg["hurt"], cfg["hurt"] * 4)
     atk  = sheet_grid(base + "attack.png", cfg["attack"], cfg["attack"] * 4)
     dea  = sheet_grid(base + "death.png", cfg["death"], cfg["death"] * 4)
 
+    # Αν υπάρχει ξεχωριστό walk_attack animation, το φορτώνουμε
+    # Αν δεν υπάρχει, χρησιμοποιούμε το attack animation ως fallback
     if cfg["walk_attack"] is not None:
         watk = sheet_grid(
             base + "walk_attack.png",
@@ -368,36 +265,77 @@ def load_enemy_animations(enemy_type="orc"):
         WALK_ATTACK: split_dirs(watk, walk_attack_frames),
     }
 
+# Επιλέγει ποια μέθοδο φόρτωσης animations θα κληθεί με βάση την κλάση του παίκτη
 def load_player_animations(class_name: str):
     if class_name == "Warrior":
         return load_warrior_animations()
     elif class_name == "Mage":
         return load_mage_animations()
+    elif class_name == "Marksman":
+        return load_marksman_animations()
     else:
         raise ValueError(f"Unknown class: {class_name}")
+    
+# Φορτώνει όλα τα animation states των dragons
+# Οι dragons έχουν δικά τους sprite sheets, 2 κατευθύνσεις και επιπλέον states όπως rise, flight, landing και attack_on_air
+def load_dragon_animations(enemy_type="dragon"):
+    family = ENEMY_FAMILIES[enemy_type]
+    cfg = ENEMY_ANIMATION_CONFIGS[family]
 
+    base = f"assets/enemies/{enemy_type}/"
+    prefix = "Dragon2" if enemy_type == "dragon2" else "Dragon"
+
+    idle = dragon_sheet_grid(base + f"{prefix}_Idle.png", cfg["idle"], cfg["idle"] * 2)
+    walk = dragon_sheet_grid(base + f"{prefix}_Walk.png", cfg["walk"], cfg["walk"] * 2)
+    hurt = dragon_sheet_grid(base + f"{prefix}_Hurt.png", cfg["hurt"], cfg["hurt"] * 2)
+    atk = dragon_sheet_grid(base + f"{prefix}_Attack.png", cfg["attack"], cfg["attack"] * 2)
+    dea = dragon_sheet_grid(base + f"{prefix}_Death.png", cfg["death"], cfg["death"] * 2)
+
+    rise = dragon_sheet_grid(base + f"{prefix}_Rise.png", cfg["rise"], cfg["rise"] * 2)
+    flight = dragon_sheet_grid(base + f"{prefix}_Flight.png", cfg["flight"], cfg["flight"] * 2)
+    landing = dragon_sheet_grid(base + f"{prefix}_Landing.png", cfg["landing"], cfg["landing"] * 2)
+    air_atk = dragon_sheet_grid(base + f"{prefix}_AttackOnAir.png", cfg["attack_on_air"], cfg["attack_on_air"] * 2)
+
+     # Επιστρέφουμε dictionary με όλα τα dragon states χωρισμένα σε left/right directions
+    return {
+        IDLE: split_dragon_dirs(idle, cfg["idle"]),
+        WALK: split_dragon_dirs(walk, cfg["walk"]),
+        HURT: split_dragon_dirs(hurt, cfg["hurt"]),
+        ATTACK: split_dragon_dirs(atk, cfg["attack"]),
+        DEATH: split_dragon_dirs(dea, cfg["death"]),
+
+        RISE: split_dragon_dirs(rise, cfg["rise"]),
+        FLIGHT: split_dragon_dirs(flight, cfg["flight"]),
+        LANDING: split_dragon_dirs(landing, cfg["landing"]),
+        ATTACK_ON_AIR: split_dragon_dirs(air_atk, cfg["attack_on_air"]),
+
+        WALK_ATTACK: split_dragon_dirs(atk, cfg["attack"]),
+    }
+
+# Sprite class για τον τοπικό και τους remote παίκτες
+# Διαχειρίζεται animation states, direction, hurt feedback, death animation και UI texts
 class PlayerSprite(arcade.Sprite):
     def __init__(self, animations, scale=2):
         super().__init__(scale=scale)
 
-        self.attack_finished = False
-        self.attack_dir = None
+        self.attack_finished = False    # Γίνεται True όταν ολοκληρωθεί το attack animation
+        self.attack_dir = None          # Κατεύθυνση που έχει κλειδώσει κατά τη διάρκεια του attack
 
-        self.hp = 1.0
-        self.energy = 1.0
+        self.hp = 1.0           # Normalized HP για UI bar
+        self.energy = 1.0       # Normalized energy για UI bar
 
         self.animations = animations
 
-        # Ορατό state
+        # Ορατό state που χρησιμοποιείται για το τρέχον animation
         self.state = IDLE           # Animation state
         self.direction = DOWN       # Tρέχουσα κατεύθυνση
         self.last_direction = DOWN  # Tελευταία κατεύθυνση (για idle)
 
-        # Βασικό state
+        # Base state που δείχνει τι πρέπει να παίζει όταν δεν υπάρχει hurt/death override
         self.base_state = IDLE
         self.base_direction = DOWN
 
-        # Flags για hurt και death states
+        # Μεταβλητές για hurt flash effect
         self.hurt_active = False
         self.hurt_flash_timer = 0.0
         self.hurt_flash_duration = 0.35
@@ -407,6 +345,7 @@ class PlayerSprite(arcade.Sprite):
         self.normal_color = (255, 255, 255)
         self.hurt_color = (255, 80, 80)
 
+        # Μεταβλητές για death animation και καθυστερημένο despawn
         self.death_started = False
         self.death_anim_finished = False
         self.death_hold_until = 0.0
@@ -441,13 +380,14 @@ class PlayerSprite(arcade.Sprite):
             anchor_y="center"
         )
 
-    # Αλλάζει animation state / direction
-    # Κάνει reset animation μόνο όταν αλλάζει state
+    # Αλλάζει άμεσα animation state και προαιρετικά direction
     def force_state(self, state, direction=None, reset=False):
+        # Αν δόθηκε κατεύθυνση, ενημερώνουμε και την τρέχουσα και την τελευταία κατεύθυνση
         if direction:
             self.direction = direction
             self.last_direction = direction
 
+        # Αν ζητείται reset ή αλλάζει state, ξεκινάμε το animation από το frame 0
         if reset or state != self.state:
             self.state = state
             self.cur_frame = 0
@@ -461,22 +401,23 @@ class PlayerSprite(arcade.Sprite):
 
         self.texture = frames[self.cur_frame]
 
+    # Ορίζει το βασικό animation state του sprite
+    # Το base state χρησιμοποιείται όταν δεν υπάρχει death/hurt/attack override
     def set_base_state(self, state, direction=None):
         if direction:
             self.base_direction = direction
 
         self.base_state = state
 
-        # death υπερισχύει όλων
+        # Το death animation έχει προτεραιότητα και δεν διακόπτεται
         if self.death_started:
             return
 
         # αλλιώς δείξε το base αμέσως, το hurt flash δεν μπλοκάρει πλέον το base animation
         self.force_state(self.base_state, self.base_direction, reset=(self.state != state))
 
+    # Αντί να αλλάζει πάντα state απευθείας, καλεί την κατάλληλη μέθοδο για hurt/death
     def set_state(self, state, direction=None):
-        # compatibility wrapper για το υπάρχον code
-        # αργότερα θα αντικατασταθεί σταδιακά με set_base_state / trigger_hurt / trigger_death
         if state == HURT:
             self.trigger_hurt(direction)
         elif state == DEATH:
@@ -484,6 +425,8 @@ class PlayerSprite(arcade.Sprite):
         else:
             self.set_base_state(state, direction)
 
+    # Ενεργοποιεί visual hurt feedback
+    # Για τον player δεν αλλάζει απαραίτητα το main animation, απλώς εμφανίζει flash effect
     def trigger_hurt(self, direction=None):
         if self.death_started:
             return
@@ -492,6 +435,7 @@ class PlayerSprite(arcade.Sprite):
         self.hurt_active = True
         self.hurt_flash_timer = self.hurt_flash_duration
 
+    # Ξεκινά το death animation και ακυρώνει hurt/attack states
     def trigger_death(self, direction=None):
         if self.death_started:
             return
@@ -504,13 +448,17 @@ class PlayerSprite(arcade.Sprite):
         death_dir = direction or self.direction or self.base_direction or self.last_direction
         self.force_state(DEATH, death_dir, reset=True)
 
+    # Ενημερώνει το animation του player με βάση τον χρόνο που πέρασε
+    # Χειρίζεται hurt flash, attack completion, looping animations και death despawn
     def update_animation(self, delta_time):
         frames = self.animations[self.state][self.direction]
         self.time_acc += delta_time
 
+        # Reset του attack_finished σε κάθε update
+        # Θα γίνει True μόνο όταν το attack φτάσει στο τελευταίο frame
         self.attack_finished = False
 
-        # Update hurt flash timer
+        # Ενημέρωση hurt flash effect
         if self.hurt_flash_timer > 0:
             self.hurt_flash_timer -= delta_time
 
@@ -531,7 +479,7 @@ class PlayerSprite(arcade.Sprite):
             self.color = self.normal_color
             self.alpha = 255
 
-        # αν έχει τελειώσει death animation, κράτα το τελευταίο frame μέχρι να περάσει το hold
+        # Αν έχει τελειώσει το death animation, κρατάμε το τελευταίο frame για λίγο και μετά ζητάμε despawn.
         if self.death_started and self.death_anim_finished:
             if time.time() >= self.death_hold_until:
                 self.despawn = True
@@ -545,14 +493,15 @@ class PlayerSprite(arcade.Sprite):
                     self.cur_frame += 1
                     self.texture = frames[self.cur_frame]
                 else:
-                    # κράτα το τελευταίο frame
+                     # Το death animation δεν κάνει loop, φτάνει στο τελευταίο frame και μένει εκεί
                     if not self.death_anim_finished:
                         self.death_anim_finished = True
                         self.death_hold_until = time.time() + 1.5
                     self.texture = frames[self.cur_frame]
                 return
 
-            if self.state in (ATTACK, WALK_ATTACK):
+            # Το attack animation δεν κάνει loop, όταν φτάσει στο τελευταίο frame ενημερώνουμε ότι ολοκληρώθηκε
+            if self.state == ATTACK:
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
                     self.texture = frames[self.cur_frame]
@@ -560,30 +509,24 @@ class PlayerSprite(arcade.Sprite):
                     self.attack_finished = True
                 return
 
-            # loop για idle/walk
+            # Τα idle/walk animations κάνουν loop
             self.cur_frame = (self.cur_frame + 1) % len(frames)
             self.texture = frames[self.cur_frame]
 
-    def should_draw(self):
-        if self.hurt_flash_timer <= 0:
-            return True
-
-        # Αναβόσβημα ανά hurt_flash_interval
-        phase = int(self.hurt_flash_timer / self.hurt_flash_interval)
-        return phase % 2 == 0
-
+# Sprite class για τους εχθρούς
+# Διαχειρίζεται animation states, hurt/death animations και projectile spawn flag
 class EnemySprite(arcade.Sprite):
     def __init__(self, enemy_type, animations, scale=1.9):
         super().__init__(scale=scale)
 
-        self.projectile_spawned = False
+        self.projectile_spawned = False     # Χρησιμοποιείται ώστε κάθε attack animation ranged enemy να δημιουργεί μόνο ένα projectile
 
-        self.enemy_type = enemy_type
+        self.enemy_type = enemy_type        # Τύπος enemy
 
-        self.dead = False
-        self.despawn = False
+        self.dead = False       # Flag για νεκρούς εχθρούς
+        self.despawn = False    # Flag για να διαγράψουμε νεκρούς εχθρούς
 
-        # Οπτικό UI Εχθρών
+        # UI στοιχεία εχθρού
         self.hp = 1.0
         self.hp_max = 1.0
         self.nickname = enemy_type
@@ -592,12 +535,12 @@ class EnemySprite(arcade.Sprite):
 
         self.animations = animations
 
-        # Ορατό State
+        # Ορατό animation state
         self.state = IDLE
         self.direction = DOWN
         self.last_direction = DOWN
 
-        # Βασικό State
+        # Base state στο οποίο επιστρέφει μετά από hurt animation
         self.base_state = IDLE
         self.base_direction = DOWN
 
@@ -607,128 +550,165 @@ class EnemySprite(arcade.Sprite):
         self.death_anim_finished = False
         self.death_hold_until = 0.0
 
-        self.last_hurt_seq = 0
+        self.last_hurt_seq = 0      # Τελευταίο hurt sequence που έχει εμφανιστεί, ώστε κάθε νέο hit να ενεργοποιεί hurt μόνο μία φορά
+        self.last_attack_seq = 0    # Τελευταίο attack_seq που έχει δει ο client για να κάνει reset το attack animation σε κάθε νέο attack
 
-        self.cur_frame = 0
-        self.time_acc = 0.0
-        self.frame_time = 0.12
+        self.cur_frame = 0      # Τρέχον frame του animation
+        self.time_acc = 0.0     # Χρόνος που έχει περάσει από την τελευταία αλλαγή frame
+        self.frame_time = 0.12  # Διάρκεια κάθε frame animation σε δευτερόλεπτα
 
-        self.texture = self.animations[self.state][self.direction][0]
+        self.texture = self.animations[self.state][self.direction][0]   # Ορίζουμε ως αρχικό texture το πρώτο frame του αρχικού state/direction
 
+    # Αλλάζει άμεσα το animation state και την κατεύθυνση του enemy
     def force_state(self, state, direction=None, reset=False):
+        # Αν δοθεί νέα κατεύθυνση, ενημερώνουμε την τρέχουσα και την τελευταία κατεύθυνση
         if direction:
             self.direction = direction
             self.last_direction = direction
 
+        # Αν ζητηθεί reset ή αλλάξει state, ξεκινάμε το animation από την αρχή
         if reset or state != self.state:
             self.state = state
             self.cur_frame = 0
             self.time_acc = 0.0
 
-            if state in (ATTACK, WALK_ATTACK):
+            # Αν ξεκινά νέο attack, επιτρέπουμε ξανά τη δημιουργία projectile
+            if state == ATTACK:
                 self.projectile_spawned = False
 
         else:
+            # Αν είναι το ίδιο state, δεν μηδενίζουμε το animation
             self.state = state
 
-        frames = self.animations[self.state][self.direction]
+        frames = self.animations[self.state][self.direction]    # Παίρνουμε τα frames του τρέχοντος state και direction
+        
+        # Έλεγχος ώστε το cur_frame να μην ξεπεράσει τα διαθέσιμα frames
         if self.cur_frame >= len(frames):
             self.cur_frame = len(frames) - 1
 
-        self.texture = frames[self.cur_frame]
+        self.texture = frames[self.cur_frame]   # Ενημερώνουμε το texture με βάση το τρέχον frame
 
+    # Ορίζει το βασικό state του enemy, στο οποίο επιστρέφει μετά από hurt ή άλλα προσωρινά states
     def set_base_state(self, state, direction=None):
+        # Αν δοθεί direction, ενημερώνουμε τη βασική κατεύθυνση
         if direction:
             self.base_direction = direction
 
-        self.base_state = state
+        self.base_state = state     # Αποθηκεύουμε το νέο βασικό state
 
+        # Αν έχει ξεκινήσει death animation, δεν το διακόπτουμε
         if self.death_started:
             return
 
+        # Αν παίζει hurt animation, δεν το διακόπτουμε
         if self.hurt_active:
             return
 
+        # Αλλάζουμε στο βασικό state, κάνοντας reset μόνο αν άλλαξε state
         self.force_state(self.base_state, self.base_direction, reset=(self.state != state))
 
+    # Αντί να αλλάζει πάντα state απευθείας, καλεί την κατάλληλη μέθοδο για hurt/death
     def set_state(self, state, direction=None):
-        # compatibility wrapper
+        # Αν ζητηθεί hurt, καλούμε την ειδική μέθοδο hurt
         if state == HURT:
             self.trigger_hurt(direction)
+        
+        # Αν ζητηθεί death, καλούμε την ειδική μέθοδο death
         elif state == DEATH:
             self.trigger_death(direction)
+
+        # Για όλα τα υπόλοιπα states, ενημερώνουμε το base state
         else:
             self.set_base_state(state, direction)
 
+    # Ενεργοποιεί το hurt animation του enemy
     def trigger_hurt(self, direction=None):
+        # Αν έχει ήδη ξεκινήσει death, δεν παίζει hurt
         if self.death_started:
             return
 
+        # Αν είναι ήδη σε hurt animation, δεν το ξανακάνουμε reset
         if self.hurt_active:
             return
 
         self.hurt_active = True
-        hurt_dir = direction or self.base_direction or self.last_direction
-        self.force_state(HURT, hurt_dir, reset=True)
 
+        hurt_dir = direction or self.base_direction or self.last_direction  # Επιλέγουμε κατεύθυνση hurt: πρώτα αυτή που δόθηκε, αλλιώς base ή last direction
+        self.force_state(HURT, hurt_dir, reset=True)                        # Ξεκινάμε το hurt animation από την αρχή
+
+    # Ενεργοποιεί το death animation του enemy
     def trigger_death(self, direction=None):
+        # Αν έχει ήδη ξεκινήσει death, δεν το ξαναξεκινάμε
         if self.death_started:
             return
 
         self.death_started = True
         self.hurt_active = False
 
-        death_dir = direction or self.direction or self.base_direction or self.last_direction
-        self.force_state(DEATH, death_dir, reset=True)
+        death_dir = direction or self.direction or self.base_direction or self.last_direction   # Επιλέγουμε την καλύτερη διαθέσιμη κατεύθυνση για το death animation
+        self.force_state(DEATH, death_dir, reset=True)                                          # Ξεκινάμε το death animation από την αρχή
 
+    # Ενημερώνει το animation του enemy με βάση τον χρόνο που πέρασε
     def update_animation(self, delta_time: float):
-        frames = self.animations[self.state][self.direction]
-        self.time_acc += delta_time
+        frames = self.animations[self.state][self.direction]    # Παίρνουμε τα frames του τρέχοντος state/direction
+        self.time_acc += delta_time                             # Προσθέτουμε τον χρόνο που πέρασε από το προηγούμενο frame
 
-        # έχει τελειώσει το death animation, περίμενε το hold
+        # Αν έχει τελειώσει το death animation, κρατάμε το τελευταίο frame για λίγο πριν γίνει despawn
         if self.death_started and self.death_anim_finished:
             if time.time() >= self.death_hold_until:
                 self.dead = True
                 self.despawn = True
             return
 
+        # Αλλάζουμε frame μόνο όταν περάσει ο απαιτούμενος χρόνος
         if self.time_acc >= self.frame_time:
             self.time_acc = 0.0
 
+            # Το death animation δεν κάνει loop
             if self.state == DEATH:
+                # Αν δεν είμαστε στο τελευταίο frame, προχωράμε στο επόμενο
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
                     self.texture = frames[self.cur_frame]
                 else:
+                    # Όταν φτάσει στο τελευταίο frame, ξεκινάει χρόνος αναμονής πριν αφαιρεθεί
                     if not self.death_anim_finished:
                         self.death_anim_finished = True
                         self.death_hold_until = time.time() + 1.5
                     self.texture = frames[self.cur_frame]
                 return
 
+            # Το hurt animation παίζει μία φορά και μετά επιστρέφει στο base state
             if self.state == HURT:
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
                     self.texture = frames[self.cur_frame]
                 else:
+                    # Όταν τελειώσει το hurt, επιστρέφουμε στο προηγούμενο βασικό state
                     self.hurt_active = False
                     self.force_state(self.base_state, self.base_direction, reset=True)
                 return
 
-            if self.state in (ATTACK, WALK_ATTACK):
-                self.cur_frame = (self.cur_frame + 1) % len(frames)
+            # Αυτά τα states δεν κάνουν loop, μένουν στο τελευταίο frame μέχρι να αλλάξει state από τον server
+            if self.state in (ATTACK, RISE, LANDING, ATTACK_ON_AIR):
+                if self.cur_frame < len(frames) - 1:
+                    self.cur_frame += 1
+                    self.texture = frames[self.cur_frame]
+                    
+                else:
+                    self.texture = frames[self.cur_frame]   # Κρατάμε το τελευταίο frame
 
-                 # Αν το attack animation έκανε loop από την αρχή,
-                # επιτρέπουμε νέο projectile στο επόμενο cast.
-                if self.cur_frame == 0:
-                    self.projectile_spawned = False
+                    # Όταν ολοκληρωθεί attack animation, επιτρέπουμε μελλοντικό projectile στο επόμενο attack
+                    if self.state == ATTACK:
+                        self.projectile_spawned = False
 
-                self.texture = frames[self.cur_frame]
                 return
 
+            # Τα υπόλοιπα states, όπως idle/walk/flight, κάνουν loop
             self.cur_frame = (self.cur_frame + 1) % len(frames)
             self.texture = frames[self.cur_frame]
 
+# Sprite για projectile επίθεση ranged enemy
 class ProjectileSprite(arcade.Sprite):
     def __init__(
         self,
@@ -741,22 +721,23 @@ class ProjectileSprite(arcade.Sprite):
     ):
         super().__init__(scale=scale)
 
-        self.animations = animations
-        self.direction = direction
+        self.animations = animations    # Animation frames του projectile ανά κατεύθυνση
+        self.direction = direction      # Κατεύθυνση προς την οποία κινείται το projectile
 
-        self.speed = speed
-        self.damage = damage
-        self.max_range = max_range
+        self.speed = speed              # Ταχύτητα κίνησης projectile
+        self.damage = damage            # Ζημιά projectile
+        self.max_range = max_range      # Μέγιστη απόσταση που μπορεί να διανύσει
 
-        self.distance_traveled = 0
-        self.remove_me = False
+        self.distance_traveled = 0      # Απόσταση που έχει διανύσει μέχρι τώρα
+        self.remove_me = False          # Γίνεται True όταν πρέπει να αφαιρεθεί
 
-        self.cur_frame = 0
-        self.time_acc = 0.0
-        self.frame_time = 0.06
+        self.cur_frame = 0              # Τρέχον animation frame
+        self.time_acc = 0.0             # Χρόνος από την τελευταία αλλαγή frame
+        self.frame_time = 0.06          # Ταχύτητα αλλαγής frames projectile
 
-        self.texture = self.animations[self.direction][0]
+        self.texture = self.animations[self.direction][0]   # Αρχικό texture: πρώτο frame της αντίστοιχης κατεύθυνσης
 
+        # Ορίζουμε την κίνηση του projectile στον X/Y άξονα με βάση την κατεύθυνση
         if direction == DOWN:
             self.change_x = 0
             self.change_y = -speed
@@ -770,21 +751,29 @@ class ProjectileSprite(arcade.Sprite):
             self.change_x = speed
             self.change_y = 0
 
+    # Ενημερώνει τη θέση του projectile
     def update(self, delta_time=0):
+        # Μετακίνηση projectile με βάση την κατεύθυνση και την ταχύτητα
         self.center_x += self.change_x
         self.center_y += self.change_y
 
+        # Υπολογίζουμε πόση απόσταση έχει διανύσει συνολικά
         self.distance_traveled += abs(self.change_x) + abs(self.change_y)
 
+        # Αν ξεπεράσει το μέγιστο range, σημαδεύεται για αφαίρεση
         if self.distance_traveled >= self.max_range:
             self.remove_me = True
 
+    # Ενημερώνει το animation του projectile
     def update_animation(self, delta_time):
-        frames = self.animations[self.direction]
+        frames = self.animations[self.direction]    # Παίρνουμε τα frames για την κατεύθυνση του projectile
 
-        self.time_acc += delta_time
+        self.time_acc += delta_time                 # Προσθέτουμε τον χρόνο που πέρασε
 
+        # Αν πέρασε αρκετός χρόνος, αλλάζουμε frame
         if self.time_acc >= self.frame_time:
             self.time_acc = 0.0
+
+            # Το projectile animation κάνει loop
             self.cur_frame = (self.cur_frame + 1) % len(frames)
             self.texture = frames[self.cur_frame]

@@ -1,5 +1,3 @@
-# Αρχείο για το αρχικό μενού με επιλογές "New player" (νέος παίκτης), "Returing player" (παίκτης που έχει ξανα παίξει)
-
 import arcade   
 import math     # Βιβλιοθήκη για pulse εφέ σε κείμενο
 
@@ -62,7 +60,7 @@ class MenuView(arcade.View):
 
     # Μέθοδος για την εμφάνιση επικεφαλίδας και επιλογών για το μενού
     def on_show_view(self):
-        self.sound_on_icon.visible = True       # Στην εκκίνση φαίνεται το sound on Sprite
+        self.sound_on_icon.visible = True       # Στην εκκίνηση φαίνεται το sound on Sprite
         self.sound_off_icon.visible = False
 
         self.background_list = arcade.SpriteList()
@@ -161,7 +159,7 @@ class MenuView(arcade.View):
             self.last_selected = self.selected
         
         title_alpha = int(128 + 127 * math.sin(self.pulseTimer * 1.0))  # Εφέ παλμού
-        self.title_text.color = (0, 0, 0, title_alpha)  # Μπλε χρώμα παλμού για την επικεφαλίδα
+        self.title_text.color = (0, 0, 0, title_alpha)  # Εφέ παλμού στην επικεφαλίδα με αλλαγή διαφάνειας
 
         alpha = int(128 + 127 * math.sin(self.pulseTimer * 4.0))  # Εφέ παλμού
 

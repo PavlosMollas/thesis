@@ -3,8 +3,9 @@ import zmq
 import zmq.asyncio
 import sys
 import time
-import arcade
-from sprites import get_enemy_type_defs
+from sprites import get_enemy_type_defs, get_player_type_defs
+from stats import (XP_REQUIREMENTS, is_dragon_type, is_dragon_damageable_state, get_dragon_runtime_defaults)
+from dragon_enemy import (update_dragon, find_nearest_player_in_region, player_is_behind_dragon, direction_from_dragon_to_player)
 import math
 from region import Region
 
@@ -39,12 +40,16 @@ PLAYER_ANIM_FRAME_TIME = 0.12
 
 PLAYER_ATTACK_ANIM_FRAMES = {
     "Warrior": {
-        "attack": 8,
+        "attack": 6,
         "walk_attack": 6,
     },
     "Mage": {
         "attack": 5,
         "walk_attack": 5,
+    },
+    "Marksman": {
+        "attack": 8,
+        "walk_attack": 8,
     },
 }
 
@@ -72,15 +77,13 @@ connected = set()     # Σύνολο παικτών σε σειρά σύνδεσ
 
 next_spawn_index = 0  # Δείκτης για κυκλική επιλογή επόμενου spawn point παίκτη
 
-enemy_spawn_counter = 0
-
 # Φόρτωση εχθρών από το spawn του tiled
 for region_name, region in regions.items():
     for (enemy_id, enemy_type, x, y) in region.enemy_spawns:
 
         defs = get_enemy_type_defs(enemy_type)
 
-        enemies[enemy_id] = {
+        enemy_data = {
             # Περιοχή εχθρού
             "region": region_name,
 
@@ -95,7 +98,7 @@ for region_name, region in regions.items():
 
             # Κατάσταση animation / συμπεριφοράς
             "state": "idle",
-            "dir": "down",
+            "dir": "right" if is_dragon_type(enemy_type) else "down",
             "dead": False,
             "hurt_seq": 0,
 
@@ -107,6 +110,10 @@ for region_name, region in regions.items():
             "attack_speed": defs["attack_speed"],
             "move_speed": defs["move_speed"],
             "attack_type": defs.get("attack_type", "melee"),
+            "special": defs.get("special"),
+
+            "tier": defs.get("tier", 1),
+            "xp_reward": defs.get("xp_reward", 40 * defs.get("tier", 1)),
 
             # Διαστάσεις hitbox
             "hitbox_w": defs["hitbox_w"],
@@ -122,6 +129,7 @@ for region_name, region in regions.items():
             "attack_cooldown": 1.0 / defs["attack_speed"],
             "next_attack_time": 0.0,
             "pending_hit_time": 0.0,
+            "attack_seq": 0,
 
             # Τρέχων στόχος και μεταβλητές για stuck handling
             "target": None,
@@ -133,101 +141,13 @@ for region_name, region in regions.items():
             "unstuck_side": 1,
         }
 
+        if is_dragon_type(enemy_type):
+            enemy_data.update(get_dragon_runtime_defaults(defs, x, y, time.time()))
+
+        enemies[enemy_id] = enemy_data
+
 TICK_DT = 0.02      # Η διάρκεια κάθε "tick" σε δευτερόλεπτα (ρυθμίζει το frame rate ~50 updates/sec)
 tick = 0            # Μετρητής "tick" για το παιχνίδι
-
-# Μέθοδος για το state των παικτών (connect/disconnect)
-async def handle_control():
-    global next_spawn_index
-
-    while True:
-        msg = await control_socket.recv_json()  # Περιμένει και λαμβάνει τα μηνύματα ελέγχου
-        pid = msg["id"]     # Το id του παίκτη
-        typ = msg["type"]   # Τύπος αιτήματος (σύνδεση ή αποσύνδεση)
-
-        # Σύνδεση παίκτη
-        if typ == "connect":
-            # Αν δεν έχει σταλεί nickname ή class_name, ορίζονται default τιμές
-            nickname = msg.get("nickname") or pid
-            class_name = msg.get("class_name") or "Warrior"
-
-            # Αν ο παίκτης είναι ήδη συνδεδεμένος, στέλνουμε απάντηση "ok"
-            if pid in connected:
-                await control_socket.send_json({"status": "ok"})
-                continue
-
-            # Προσθήκη του παίκτη στo σύνολο των συνδεδεμένων
-            connected.add(pid)
-
-            # Περιοχή και spawn σε αυτή
-            start_region = regions[START_REGION]
-            spawn_points = start_region.spawn_points
-
-            # Spawn place
-            spawn_index = next_spawn_index
-            next_spawn_index += 1
-
-            x, y = spawn_points[spawn_index % len(spawn_points)]
-
-            # Δημιουργία εγγραφής παίκτη
-            players[pid] = {
-                # Θέση
-                "x": x,         
-                "y": y, 
-
-                # Βασικά στοιχεία
-                "nickname": nickname,  
-                "class_name": class_name,
-                "level": 1,     
-
-                # Στατιστικά μάχης 
-                "hp": 1.0,      
-                "hp_cur": 100,
-                "hp_max": 100, 
-                "energy": 1.0,   
-                "resist": 0,
-                "damage": 35,
-
-                # Κατάσταση παίκτη
-                "state": "idle",
-                "dir": "down",
-                "dead": False,
-                "hurt_seq": 0,
-
-                # Στοιχεία επίθεσης
-                "attack_requested": False,
-                "attack_dir": "down",
-                "attack_cooldown": 0.45,
-                "next_attack_time": 0.0,
-                "attack_anim_until": 0.0,
-                "attack_state": "attack",
-
-                # Κατεύθυνση κίνησης
-                "move_dir": "STOP",
-
-                # Αρχική περιοχή
-                "region": START_REGION,
-                }   
-
-            print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
-
-            # Επιβεβαίωση σύνδεσης προς client
-            await control_socket.send_json({
-                "status": "ok",
-            })
-
-        # Αποσύνδεση παίκτη
-        elif typ == "disconnect":
-            # Παίρνουμε το nickname, αν υπάρχει, αλλιώς χρησιμοποιούμε το player id
-            name = players.get(pid, {}).get("nickname", pid)
-            print(f"Player {name} DISCONNECTED")
-
-            # Αφαίρεση από connected players και από το players dict
-            connected.discard(pid)
-            players.pop(pid, None)
-
-            # Επιβεβαίωση αποσύνδεσης προς client
-            await control_socket.send_json({"status": "ok"})
 
 def get_region(region_name: str) -> Region:
     return regions[region_name]
@@ -384,28 +304,70 @@ def aabb_overlap(ax, ay, aw, ah, bx, by, bw, bh):
 # Μέθοδος για την αποφυγή του "σπρωξίματος" μεταξύ παίκτη και εχθρού (δεν κινεί ο ένας τον άλλο)
 # Αν παίκτης και εχθρός επικαλυφθούν τότε και οι δύο επιστρέφουν στις προηγούμενες θέσεις τους
 def player_enemy_blocking(prev_players, prev_enemies):
+    # Διατρέχουμε όλους τους παίκτες
     for pid, p in players.items():
-        # Προηγούμενη θέση παίκτη
+        # Παίρνουμε την προηγούμενη θέση του παίκτη πριν εφαρμοστεί η κίνηση αυτού του tick, αν δεν υπάρχει προηγούμενη θέση χρησιμοποιούμε την τρέχουσα
         prev_player_x, prev_player_y = prev_players.get(pid, (p["x"], p["y"]))
 
-        for eid, e in enemies.items():
-            # Αγνοούμε νεκρούς εχθρούς
-            if e.get("dead"):
+        for eid, e in enemies.items():  # Για κάθε παίκτη ελέγχουμε όλους τους εχθρούς
+            if e.get("dead"):           # Αγνοούμε εχθρούς που έχουν πεθάνει
                 continue
 
-            if p["region"] != e["region"]:
+            if p["region"] != e["region"]:  # Αγνοούμε συγκρούσεις όταν παίκτης και εχθρός βρίσκονται σε διαφορετική περιοχή
                 continue
 
-            # Προηγούμενη θέση enemy
+            # Παίρνουμε την προηγούμενη θέση του εχθρού, ώστε αν υπάρξει overlap να επιστρέψει πίσω και να μη σπρώξει τον παίκτη
             prev_enemy_x, prev_enemy_y = prev_enemies.get(eid, (e["x"], e["y"]))
 
-            # Αν υπάρχει overlap, επαναφέρουμε και τους δύο
+            # Δεν χρησιμοποιούμε ολόκληρο το hitbox του enemy για blocking, αλλά ένα μικρότερο blocking hitbox
+            # Για τον dragon χρησιμοποιούμε μεγαλύτερο ποσοστό, γιατί είναι boss με μεγάλο σώμα και θέλουμε να μπλοκάρει πιο σταθερά τον παίκτη
+            if e.get("special") == "dragon":
+                enemy_block_w = e["hitbox_w"] * 0.90
+                enemy_block_h = e["hitbox_h"] * 0.80
+            else:
+                enemy_block_w = e["hitbox_w"] * 0.65
+                enemy_block_h = e["hitbox_h"] * 0.65
+
+            # Χρησιμοποιούμε μικρότερο blocking hitbox και για τον player, ώστε να μην μπλοκάρει υπερβολικά από μικρές επαφές στα άκρα του sprite
+            player_block_w = PLAYER_WIDTH * 0.75
+            player_block_h = PLAYER_HEIGHT * 0.75
+
+            # Αν δεν υπάρχει overlap, δεν κάνουμε τίποτα
+            if not aabb_overlap(
+                p["x"], p["y"], player_block_w, player_block_h,
+                e["x"], e["y"], enemy_block_w, enemy_block_h
+            ):
+                continue
+
+            # Υπάρχει overlap, οπότε διορθώνουμε πρώτα ανά άξονα, ώστε ο παίκτης να μη γυρίζει πάντα πλήρως στην προηγούμενη θέση
+
+            # Δοκιμάζουμε αν με το παλιό Y συνεχίζει το overlap, άρα φταίει το νέο X
+            overlap_with_old_y = aabb_overlap(
+                p["x"], prev_player_y, player_block_w, player_block_h,
+                e["x"], e["y"], enemy_block_w, enemy_block_h
+            )
+
+            # Δοκιμάζουμε αν με το παλιό X συνεχίζει το overlap, άρα φταίει το νέο Y
+            overlap_with_old_x = aabb_overlap(
+                prev_player_x, p["y"], player_block_w, player_block_h,
+                e["x"], e["y"], enemy_block_w, enemy_block_h
+            )
+
+            if overlap_with_old_y:      # Αν με το παλιό Y συνεχίζει να υπάρχει overlap, τότε διορθώνουμε τον X άξονα γυρίζοντας το X του παίκτη πίσω
+                p["x"] = prev_player_x
+
+            if overlap_with_old_x:      # Αν με το παλιό X συνεχίζει να υπάρχει overlap, τότε διορθώνουμε τον Y άξονα γυρίζοντας το Y του παίκτη πίσω
+                p["y"] = prev_player_y
+
+            # Αν και τα δύο ακόμα κάνουν overlap, τότε γυρνάμε και τα δύο
             if aabb_overlap(
-                p["x"], p["y"], PLAYER_WIDTH, PLAYER_HEIGHT,
-                e["x"], e["y"], e["hitbox_w"], e["hitbox_h"]
+                p["x"], p["y"], player_block_w, player_block_h,
+                e["x"], e["y"], enemy_block_w, enemy_block_h
             ):
                 p["x"], p["y"] = prev_player_x, prev_player_y
-                e["x"], e["y"] = prev_enemy_x, prev_enemy_y
+
+            # Enemy πίσω στην προηγούμενη θέση του, για να μη σπρώχνει τον παίκτη
+            e["x"], e["y"] = prev_enemy_x, prev_enemy_y
 
 # Μέθοδος που υπολογίζει την ευκλείδεια απόσταση μεταξύ δύο σημείων
 def dist(ax, ay, bx, by):
@@ -550,21 +512,13 @@ def update_enemy_chase_and_movement():
         if e.get("dead"):
             continue
 
+        # Αν ο εχθρός είναι dragon, δεν ακολουθεί το απλό chase/attack σύστημα των υπόλοιπων εχθρών
+        if e.get("special") == "dragon":
+            update_dragon(e, players, dist, move_enemy, collides_with_walls_aabb)
+            continue
+
         # Εύρεση κοντινότερου ζωντανού παίκτη
-        nearest_pid = None
-        nearest_d = 1e9  # Αρχικοποίηση με πολύ μεγάλη τιμή απόστασης, ώστε να βρεθεί ο κοντινότερος παίκτης
-
-        for pid, p in players.items():
-            if p.get("dead", False):
-                continue
-
-            if p["region"] != e["region"]:
-                continue
-
-            d = dist(e["x"], e["y"], p["x"], p["y"])
-            if d < nearest_d:
-                nearest_d = d
-                nearest_pid = pid
+        nearest_pid, nearest_player, nearest_d = find_nearest_player_in_region(e, players, dist)
 
         # Αν υπάρχει κοντινότερος παίκτης μέσα στο aggro radius, ο εχθρός μπορεί να αλλάξει focus σε αυτόν
         if nearest_pid is not None and nearest_d <= e["aggro_radius"]:
@@ -690,6 +644,9 @@ def apply_enemy_attacks():
     now = time.time()
 
     for e in enemies.values():
+        if e.get("special") == "dragon":
+            continue
+
         # Αγνοούμε νεκρούς εχθρούς ή εχθρούς χωρίς στόχο
         if e.get("dead") or e["target"] is None:
             continue
@@ -720,6 +677,9 @@ def apply_enemy_attacks():
         # Αν ξεκινά τώρα το attack, ορίζουμε πότε θα γίνει το πραγματικό hit
         if e["pending_hit_time"] <= 0.0:
             e["pending_hit_time"] = now + e["windup"]
+
+            # Κάθε φορά που ξεκινάει νέο attack, αυξάνουμε το attack_seq και ο client καταλαβαίνει ότι πρέπει να ξαναπαίξει το attack animation από την αρχή
+            e["attack_seq"] = e.get("attack_seq", 0) + 1
 
             # Το cooldown ξεκινάει από τώρα για να μην ξεκινά πολλές επιθέσεις μαζί
             e["next_attack_time"] = now + e["attack_cooldown"]
@@ -766,6 +726,59 @@ def apply_enemy_attacks():
                     # Θέλουμε νέο animation όταν τελειώσει το προηγούμενο και όχι ενδιάμεσα να γίνεται reset
                     tp["hurt_seq"] = tp.get("hurt_seq", 0) + 1
 
+def enemy_in_player_directional_range(p, e, attack_defs):
+    dx = e["x"] - p["x"]
+    dy = e["y"] - p["y"]
+
+    direction = p.get("attack_dir", p.get("dir", "down"))
+    attack_range = attack_defs.get("range", 70)
+    lane_half_width = attack_defs.get("lane_half_width", 36)
+
+    if direction == "right":
+        return dx > 0 and dx <= attack_range and abs(dy) <= lane_half_width
+
+    if direction == "left":
+        return dx < 0 and abs(dx) <= attack_range and abs(dy) <= lane_half_width
+
+    if direction == "up":
+        return dy > 0 and dy <= attack_range and abs(dx) <= lane_half_width
+
+    if direction == "down":
+        return dy < 0 and abs(dy) <= attack_range and abs(dx) <= lane_half_width
+
+    return False
+
+def get_xp_next_for_level(level):
+    return XP_REQUIREMENTS.get(level, 0)
+
+
+def gain_player_xp(p, amount):
+    if p.get("level", 1) >= p.get("max_level", 10):
+        p["level"] = p.get("max_level", 10)
+        p["xp"] = 0
+        p["xp_next"] = 0
+        return
+
+    p["xp"] = p.get("xp", 0) + amount
+
+    while p["level"] < p["max_level"] and p["xp"] >= p["xp_next"]:
+        p["xp"] -= p["xp_next"]
+        p["level"] += 1
+
+        # Level up stat scaling
+        p["hp_max"] += 15
+        p["hp_cur"] = p["hp_max"]
+        p["hp"] = 1.0
+        p["damage"] += 4
+        p["resist"] += 1
+
+        p["xp_next"] = get_xp_next_for_level(p["level"])
+
+    if p["level"] >= p["max_level"]:
+        p["level"] = p["max_level"]
+        p["xp"] = 0
+        p["xp_next"] = 0
+
 # Μέθοδος που εφαρμόζει τις επιθέσεις των παικτών πάνω στους εχθρούς
 def apply_player_attacks():
     now = time.time()
@@ -785,15 +798,38 @@ def apply_player_attacks():
         if now < p.get("next_attack_time", 0.0):
             continue
 
-        # Ορισμός επόμενου διαθέσιμου attack time
-        p["next_attack_time"] = now + p.get("attack_cooldown", 0.45)
+        # Παίρνουμε την κλάση του παίκτη για να βρούμε τα αντίστοιχα attack stats
+        class_name = p.get("class_name", "Warrior") 
 
-        attack_dir = p.get("attack_dir", "down")
+        try:
+            class_defs = get_player_type_defs(class_name)
+        except ValueError:
+            class_defs = get_player_type_defs("Warrior")
+
+        # Παίρνουμε το attack που ζητήθηκε (basic, skill1, skill2)
+        attack_id = p.get("attack_id", "basic")
+        attacks = class_defs.get("attacks", {})
+
+        if attack_id not in attacks:    # Αν για κάποιο λόγο το attack δεν υπάρχει, χρησιμοποιούμε το basic
+            attack_id = "basic"
+
+        attack_defs = attacks[attack_id]
+
+        # Έλεγχος αν ο παίκτης έχει ξεκλειδώσει το συγκεκριμένο attack με βάση το level του
+        required_level = attack_defs.get("unlock_level", 1)
+        if p.get("level", 1) < required_level:
+            continue
+
+        # Ορίζουμε το επόμενο χρονικό σημείο στο οποίο ο παίκτης θα μπορεί να ξαναεπιτεθεί
+        cooldown = attack_defs.get("cooldown", 0.45)
+        p["next_attack_time"] = now + cooldown
+
+        # Παίρνουμε τον τύπο και την απόσταση της επίθεσης
+        attack_type = attack_defs.get("attack_type", class_defs.get("attack_type", "melee"))
+        attack_range = attack_defs.get("range", 70)
+
         px = p["x"]
         py = p["y"]
-
-        # Μέγιστη απόσταση επίθεσης παίκτη
-        attack_range = 70
 
         # Θα επιλεγεί ο κοντινότερος enemy που είναι μπροστά από τον παίκτη
         target_eid = None
@@ -804,26 +840,31 @@ def apply_player_attacks():
             if e.get("dead", False):
                 continue
 
-            if e["region"] != p["region"]:
+            if e["region"] != p["region"]:      # Ο παίκτης μπορεί να χτυπήσει μόνο εχθρούς που βρίσκονται στην ίδια περιοχή
                 continue
 
-            dx = e["x"] - px
-            dy = e["y"] - py
+            d = dist(px, py, e["x"], e["y"])    # Υπολογίζουμε την απόσταση παίκτη-εχθρού
 
-            # Ο παίκτης χτυπά μόνο προς τη μεριά που κοιτάζει
-            if attack_dir == "up" and dy <= 0:
-                continue
-            if attack_dir == "down" and dy >= 0:
-                continue
-            if attack_dir == "left" and dx >= 0:
-                continue
-            if attack_dir == "right" and dx <= 0:
+            if d > attack_range:                # Αν ο εχθρός είναι πιο μακριά από το range της επίθεσης, δεν μπορεί να χτυπηθεί
                 continue
 
-            # Έλεγχος απόστασης
-            d = dist(px, py, e["x"], e["y"])
-            if d > attack_range:
-                continue
+            if attack_type == "ranged":         # Για ranged επιθέσεις ελέγχουμε αν ο εχθρός βρίσκεται στη σωστή ευθεία
+                if not enemy_in_player_directional_range(p, e, attack_defs):
+                    continue
+
+            else:   # Για melee επιθέσεις ελέγχουμε απλά αν ο εχθρός βρίσκεται μπροστά από τον παίκτη
+                attack_dir = p.get("attack_dir", "down")
+                dx = e["x"] - px
+                dy = e["y"] - py
+
+                if attack_dir == "up" and dy <= 0:      # Αν ο παίκτης χτυπάει προς τα πάνω, ο εχθρός πρέπει να είναι πάνω του
+                    continue
+                if attack_dir == "down" and dy >= 0:    # Αν ο παίκτης χτυπάει προς τα κάτω, ο εχθρός πρέπει να είναι κάτω του
+                    continue
+                if attack_dir == "left" and dx >= 0:    # Αν ο παίκτης χτυπάει αριστερά, ο εχθρός πρέπει να είναι αριστερά του
+                    continue
+                if attack_dir == "right" and dx <= 0:   # Αν ο παίκτης χτυπάει δεξιά, ο εχθρός πρέπει να είναι δεξιά του
+                    continue
 
             # Επιλέγουμε τον κοντινότερο έγκυρο στόχο
             if d < best_dist:
@@ -834,20 +875,151 @@ def apply_player_attacks():
         if target_eid is None:
             continue
 
-        e = enemies[target_eid]
+        e = enemies[target_eid]     # Παίρνουμε τον εχθρό που επιλέχθηκε ως στόχος
+
+        # Αν είναι dragon και είναι σε state που δεν χτυπιέται, αγνοούμε το hit
+        if e.get("special") == "dragon":
+            if not is_dragon_damageable_state(e.get("state", "idle")):
+                continue
+
+            # Μετράμε hits στο ground phase, για να χρησιμοποιηθούν αργότερα στο rise
+            e["hits_taken_ground"] = e.get("hits_taken_ground", 0) + 1
+
+            # Αν ο player τον χτύπησε από πίσω, ο dragon θα γυρίσει και θα κάνει attack
+            if player_is_behind_dragon(p, e):
+                e["last_back_hit_time"] = now
+                e["last_back_hit_by"] = p.get("nickname", "")
+                e["last_back_hit_dir"] = direction_from_dragon_to_player(e, p)
+
+        base_damage = p.get("damage", class_defs.get("damage", 25)) # Υπολογισμός βασικής ζημιάς του παίκτη
+        multiplier = attack_defs.get("damage_multiplier", 1.0)      # Πολλαπλασιαστής ζημιάς ανάλογα με το attack που χρησιμοποιήθηκε
 
         # Υπολογισμός damage μετά το resist του εχθρού
-        dmg = max(0, p.get("damage", 35) - e.get("resist", 0))
-        e["hp"] -= dmg
+        dmg = int(base_damage * multiplier)
+        dmg = max(0, dmg - e.get("resist", 0))
+
+        e["hp"] -= dmg  # Εφαρμόζουμε τη ζημιά στον εχθρό
 
         # Αν ο enemy πεθάνει
         if e["hp"] <= 0:
             e["hp"] = 0
             e["dead"] = True
             e["state"] = "death"
+
+            # Ο παίκτης παίρνει XP όταν σκοτώνει τον εχθρό
+            xp_gain = e.get("xp_reward", 40 * e.get("tier", 1))
+            gain_player_xp(p, xp_gain)
         else:
             # Διαφορετικά αυξάνουμε hurt sequence για animation
             e["hurt_seq"] = e.get("hurt_seq", 0) + 1
+
+# Μέθοδος για το state των παικτών (connect/disconnect)
+async def handle_control():
+    global next_spawn_index
+
+    while True:
+        msg = await control_socket.recv_json()  # Περιμένει και λαμβάνει τα μηνύματα ελέγχου
+        pid = msg["id"]     # Το id του παίκτη
+        typ = msg["type"]   # Τύπος αιτήματος (σύνδεση ή αποσύνδεση)
+
+        # Σύνδεση παίκτη
+        if typ == "connect":
+            # Αν δεν έχει σταλεί nickname ή class_name, ορίζονται default τιμές
+            nickname = msg.get("nickname") or pid
+            class_name = msg.get("class_name") or "Warrior"
+
+            try:
+                class_defs = get_player_type_defs(class_name)
+            except ValueError:
+                class_name = "Warrior"
+                class_defs = get_player_type_defs(class_name)
+
+            # Αν ο παίκτης είναι ήδη συνδεδεμένος, στέλνουμε απάντηση "ok"
+            if pid in connected:
+                await control_socket.send_json({"status": "ok"})
+                continue
+
+            # Προσθήκη του παίκτη στo σύνολο των συνδεδεμένων
+            connected.add(pid)
+
+            # Περιοχή και spawn σε αυτή
+            start_region = regions[START_REGION]
+            spawn_points = start_region.spawn_points
+
+            # Spawn place
+            spawn_index = next_spawn_index
+            next_spawn_index += 1
+
+            x, y = spawn_points[spawn_index % len(spawn_points)]
+
+            hp_max = class_defs.get("hp_max", 100)
+
+            # Δημιουργία εγγραφής παίκτη
+            players[pid] = {
+                # Θέση
+                "x": x,         
+                "y": y, 
+
+                # Βασικά στοιχεία
+                "nickname": nickname,  
+                "class_name": class_name,
+                "level": class_defs.get("level", 1),
+                "xp": class_defs.get("xp", 0),
+                "xp_next": class_defs.get("xp_next", XP_REQUIREMENTS[1]),
+                "max_level": class_defs.get("max_level", 10),
+
+                "hp": 1.0,
+                "hp_cur": hp_max,
+                "hp_max": hp_max,
+                "energy": 1.0,
+                "resist": class_defs.get("resist", 0),
+                "damage": class_defs.get("damage", 25),
+
+                "attack_type": class_defs.get("attack_type", "melee"),
+                "move_speed": class_defs.get("move_speed", SPEED),
+
+                # Κατάσταση παίκτη
+                "state": "idle",
+                "dir": "down",
+                "dead": False,
+                "hurt_seq": 0,
+
+                # Στοιχεία επίθεσης
+                "attack_requested": False,
+                "attack_id": "basic",
+                "attack_dir": "down",
+                "attack_cooldown": class_defs["attacks"]["basic"].get("cooldown", 0.45),
+                "next_attack_time": 0.0,
+                "attack_anim_until": 0.0,
+                "attack_state": "attack",
+                "pending_hit_time": 0.0,
+
+                # Κατεύθυνση κίνησης
+                "move_dir": "STOP",
+
+                # Αρχική περιοχή
+                "region": START_REGION,
+                }   
+
+            print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
+
+            # Επιβεβαίωση σύνδεσης προς client
+            await control_socket.send_json({
+                "status": "ok",
+            })
+
+        # Αποσύνδεση παίκτη
+        elif typ == "disconnect":
+            # Παίρνουμε το nickname, αν υπάρχει, αλλιώς χρησιμοποιούμε το player id
+            name = players.get(pid, {}).get("nickname", pid)
+            print(f"Player {name} DISCONNECTED")
+
+            # Αφαίρεση από connected players και από το players dict
+            connected.discard(pid)
+            players.pop(pid, None)
+
+            # Επιβεβαίωση αποσύνδεσης προς client
+            await control_socket.send_json({"status": "ok"})
 
 # Μέθοδος που λαμβάνει και επεξεργάζεται τα inputs των παικτών
 async def handle_inputs():
@@ -880,14 +1052,11 @@ async def handle_inputs():
 
             now = time.time()
 
-            # Αν υπάρχει ήδη attack request που δεν έχει επεξεργαστεί ακόμα,
-            # αγνοούμε επιπλέον attack inputs για να μην ανανεώνεται συνέχεια το animation lock.
+            # Αν υπάρχει ήδη attack request που δεν έχει επεξεργαστεί ακόμα, αγνοούμε επιπλέον attack inputs για να μην ανανεώνεται συνέχεια το animation lock
             if players[pid].get("attack_requested", False):
                 continue
 
-            # Αν ο παίκτης είναι ακόμα σε cooldown,
-            # δεν αλλάζουμε ούτε state ούτε attack_anim_until.
-            # Έτσι δεν κολλάει ο παίκτης σε attack animation χωρίς πραγματικό hit.
+            # Αν ο παίκτης είναι ακόμα σε cooldown, δεν αλλάζουμε ούτε state ούτε attack_anim_until για να μην κολλάει ο παίκτης σε attack animation χωρίς πραγματικό hit
             if now < players[pid].get("next_attack_time", 0.0):
                 players[pid]["attack_requested"] = False
                 continue
@@ -899,11 +1068,11 @@ async def handle_inputs():
             if adir not in ("UP", "DOWN", "LEFT", "RIGHT"):
                 adir = "DOWN"
 
-            # Αν ο παίκτης κινείται, χρησιμοποιούμε walk_attack, αλλιώς attack
-            move_dir = players[pid].get("move_dir", "STOP")
-            attack_state = "walk_attack" if move_dir != "STOP" else "attack"
+            # Για την επίθεση χρησιμοποιούμε το attack animation
+            attack_state = "attack"
 
             players[pid]["attack_requested"] = True
+            players[pid]["attack_id"] = msg.get("attack_id", "basic")
             players[pid]["attack_dir"] = adir.lower()
             players[pid]["dir"] = adir.lower()
 
