@@ -32,6 +32,9 @@ ATTACK = "attack"
 HURT = "hurt"
 DEATH = "death"
 WALK_ATTACK = "walk_attack"
+ATTACK02 = "attack02"
+ATTACK03 = "attack03"
+DASH = "dash"
 
 # Επιπλέον καταστάσεις για εχθρούς δράκους
 RISE = "rise"
@@ -179,12 +182,16 @@ def load_warrior_animations():
     idle = sheet_grid(base+"WarriorIdle.png", 5, 20)
     walk = sheet_grid(base+"WarriorWalk.png", 8, 32)
     atk  = sheet_grid(base+"WarriorAttack01.png", 6, 24)
+    atk2 = sheet_grid(base+"WarriorAttack02.png", 6, 24)
+    atk3 = sheet_grid(base+"WarriorAttack03.png", 5, 20)
     dea  = sheet_grid(base+"WarriorDeath.png", 5, 20)
 
     return {
         IDLE: {DOWN: idle[0:5], LEFT: idle[5:10], RIGHT: idle[10:15], UP: idle[15:20]},
         WALK: {DOWN: walk[0:8], LEFT: walk[8:16], RIGHT: walk[16:24], UP: walk[24:32]},
         ATTACK:{DOWN: atk[0:6], LEFT: atk[6:12], RIGHT: atk[12:18], UP: atk[18:24]},
+        ATTACK02: {DOWN: atk2[0:6], LEFT: atk2[6:12], RIGHT: atk2[12:18], UP: atk2[18:24]},
+        ATTACK03: {DOWN: atk3[0:5], LEFT: atk3[5:10], RIGHT: atk3[10:15], UP: atk3[15:20]},
         DEATH:{DOWN: dea[0:5], LEFT: dea[5:10], RIGHT: dea[10:15], UP: dea[15:20]},
     }
 
@@ -195,12 +202,16 @@ def load_mage_animations():
     idle = sheet_grid(base + "MageIdle.png", 6, 24)
     walk = sheet_grid(base + "MageRun.png", 6, 24)
     atk  = sheet_grid(base + "MageAttack01.png", 5, 20)
+    atk2 = sheet_grid(base + "MageAttack02.png", 7, 28)
+    atk3 = sheet_grid(base + "MageAttack03.png", 7, 28)
     dea  = sheet_grid(base + "MageDeath.png", 7, 28)
 
     return {
         IDLE: {DOWN: idle[0:6], LEFT: idle[6:12], RIGHT: idle[12:18], UP: idle[18:24]},
         WALK: {DOWN: walk[0:6], LEFT: walk[6:12], RIGHT: walk[12:18], UP: walk[18:24]},
         ATTACK: {DOWN: atk[0:5], LEFT: atk[5:10], RIGHT: atk[10:15], UP: atk[15:20]},
+        ATTACK02: {DOWN: atk2[0:7], LEFT: atk2[7:14], RIGHT: atk2[14:21], UP: atk2[21:28]},
+        ATTACK03: {DOWN: atk3[0:7], LEFT: atk3[7:14], RIGHT: atk3[14:21], UP: atk3[21:28]},
         DEATH: {DOWN: dea[0:7], LEFT: dea[7:14], RIGHT: dea[14:21], UP: dea[21:28]},
     }
 
@@ -211,12 +222,14 @@ def load_marksman_animations():
     idle = marksman_sheet_grid(base + "Idle_Gun.png", 8, 32)
     walk = marksman_sheet_grid(base + "Walk_Gun.png", 8, 32)
     atk  = marksman_sheet_grid(base + "Shooting_attack.png", 8, 32)
+    dash = marksman_sheet_grid(base + "Dash_Gun.png", 8, 32)
     dea  = marksman_sheet_grid(base + "Death_GUN.png", 8, 32)
 
     return {
         IDLE: {DOWN: idle[0:8], LEFT: idle[8:16], RIGHT: idle[16:24], UP: idle[24:32]},
         WALK: {DOWN: walk[0:8], LEFT: walk[8:16], RIGHT: walk[16:24], UP: walk[24:32]},
         ATTACK: {DOWN: atk[0:8], LEFT: atk[8:16], RIGHT: atk[16:24], UP: atk[24:32]},
+        ATTACK02: {DOWN: dash[0:8], LEFT: dash[8:16], RIGHT: dash[16:24], UP: dash[24:32]},
         DEATH: {DOWN: dea[0:8], LEFT: dea[8:16], RIGHT: dea[16:24], UP: dea[24:32]},
     }
 
@@ -501,7 +514,7 @@ class PlayerSprite(arcade.Sprite):
                 return
 
             # Το attack animation δεν κάνει loop, όταν φτάσει στο τελευταίο frame ενημερώνουμε ότι ολοκληρώθηκε
-            if self.state == ATTACK:
+            if self.state in (ATTACK, ATTACK02, ATTACK03):
                 if self.cur_frame < len(frames) - 1:
                     self.cur_frame += 1
                     self.texture = frames[self.cur_frame]
@@ -520,6 +533,7 @@ class EnemySprite(arcade.Sprite):
         super().__init__(scale=scale)
 
         self.projectile_spawned = False     # Χρησιμοποιείται ώστε κάθε attack animation ranged enemy να δημιουργεί μόνο ένα projectile
+        self.attack_finished = False        # Τελειώνει η επίθεση του εχθρού
 
         self.enemy_type = enemy_type        # Τύπος enemy
 
@@ -575,6 +589,7 @@ class EnemySprite(arcade.Sprite):
             # Αν ξεκινά νέο attack, επιτρέπουμε ξανά τη δημιουργία projectile
             if state == ATTACK:
                 self.projectile_spawned = False
+                self.attack_finished = False
 
         else:
             # Αν είναι το ίδιο state, δεν μηδενίζουμε το animation
@@ -632,6 +647,8 @@ class EnemySprite(arcade.Sprite):
             return
 
         self.hurt_active = True
+        self.attack_finished = False
+        self.projectile_spawned = False
 
         hurt_dir = direction or self.base_direction or self.last_direction  # Επιλέγουμε κατεύθυνση hurt: πρώτα αυτή που δόθηκε, αλλιώς base ή last direction
         self.force_state(HURT, hurt_dir, reset=True)                        # Ξεκινάμε το hurt animation από την αρχή
@@ -701,6 +718,7 @@ class EnemySprite(arcade.Sprite):
                     # Όταν ολοκληρωθεί attack animation, επιτρέπουμε μελλοντικό projectile στο επόμενο attack
                     if self.state == ATTACK:
                         self.projectile_spawned = False
+                        self.attack_finished = True
 
                 return
 

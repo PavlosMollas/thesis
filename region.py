@@ -56,9 +56,10 @@ class Region:
             if obj.name == "transition":
                 target_map = props.get("target_map")
                 target_spawn = props.get("target_spawn")
+                action = props.get("action")
 
-                # Κάθε transition πρέπει να έχει target_map και target_spawn
-                if not target_map or not target_spawn:
+                # Αν είναι τελικό transition νίκης, δεν χρειάζεται target_map / target_spawn
+                if action != "win" and (not target_map or not target_spawn):
                     raise RuntimeError(
                         f"Transition in map '{self.name}' is missing target_map or target_spawn"
                     )
@@ -82,6 +83,7 @@ class Region:
                     "height": top - bottom,
                     "target_map": target_map,
                     "target_spawn": target_spawn,
+                    "action": action,
                 })
                 continue
 

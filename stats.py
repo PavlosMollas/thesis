@@ -1,3 +1,7 @@
+import csv
+import os
+import time
+
 # Frames για τα state του κάθε εχθρού
 ENEMY_ANIMATION_CONFIGS = {
     "orc": {
@@ -255,6 +259,7 @@ ENEMY_TYPES = {
 
         "ground_attack_range": 140,       # Οριζόντια απόσταση που φτάνει το ground attack
         "ground_attack_width": 90,        # Κάθετο πλάτος/lane μέσα στο οποίο μπορεί να χτυπηθεί ο παίκτης
+        "ground_attack_y_offset": -30,    # Μετατόπιση στον Y άξονα ώστε το hitbox του ground attack να ταιριάζει με το visual effect
         "ground_attack_impact_frame": 6,  # Frame του ground attack animation στο οποίο εφαρμόζεται η ζημιά
 
         "flight_before_air_attack_time": 1.2, # Χρόνος που πετάει πριν ξεκινήσει air attack
@@ -289,26 +294,23 @@ ENEMY_TYPES = {
         "attack_type": "dragon",
         "special": "dragon",
 
-        # Dragon boss behavior
         "trigger_radius": 400,
         "patrol_distance": 420,
 
-        # Ground phase
         "ground_hits_before_rise": 3,
         "ground_phase_max_time": 9.0,
 
-        # Ground attack area
         "ground_attack_range": 120,
         "ground_attack_width": 80,
+        "ground_attack_y_offset": -30,
         "ground_attack_impact_frame": 6,
 
-        # Air phase
         "flight_before_air_attack_time": 1.2,
         "max_air_attacks": 2,
 
-        # Air attack area
         "air_attack_range": 300,
         "air_attack_width": 120,
+        "air_attack_y_offset": -100,
         "air_attack_impact_frame": 8,
 
         "wall_probe_w": 130,
@@ -331,13 +333,13 @@ XP_REQUIREMENTS = {
     10: 0
 }
 
-# Είδη παικτών και στατιστικά
+# Λεξικό που περιέχει τα διαθέσιμα είδη παικτών και τα αρχικά τους στατιστικά
 PLAYER_TYPES = {
 
     "Warrior": {
-        "hp_max": 125,          # Μέγιστη ζωή του παίκτη όταν επιλέγει Warrior
+        "hp_max": 110,          # Μέγιστη ζωή του παίκτη όταν επιλέγει Warrior
         "damage": 25,           # Βασική ζημιά του Warrior πριν εφαρμοστεί multiplier από κάποιο attack
-        "resist": 9,            # Άμυνα του Warrior. Μειώνει τη ζημιά που δέχεται από enemies
+        "resist": 6,            # Άμυνα του Warrior. Μειώνει τη ζημιά που δέχεται από enemies
         "attack_speed": 0.9,    # Βασική ταχύτητα επίθεσης της κλάσης
         "move_speed": 3.2,      # Ταχύτητα κίνησης της κλάσης
         "attack_type": "melee", # Βασικός τύπος επίθεσης της κλάσης
@@ -348,7 +350,7 @@ PLAYER_TYPES = {
         "max_level": 10,        # Μέγιστο level που μπορεί να φτάσει ο παίκτης
 
         "attacks": {
-            "basic": {
+            "basic": {                       # Βασική επίθεση
                 "attack_type": "melee",      # Τύπος επίθεσης. Το melee χτυπά κοντινούς εχθρούς
                 "range": 70,                 # Απόσταση στην οποία μπορεί να χτυπήσει ο παίκτης
                 "damage_multiplier": 1.0,    # Πολλαπλασιαστής πάνω στο βασικό damage
@@ -356,26 +358,33 @@ PLAYER_TYPES = {
                 "cooldown": 0.45,            # Χρόνος αναμονής μέχρι να ξαναχρησιμοποιηθεί
                 "animation": "attack",       # Animation που παίζει όταν χρησιμοποιείται η επίθεση
                 "unlock_level": 1,           # Level στο οποίο ξεκλειδώνει η επίθεση
+                "energy_cost": 0.0,
             },
 
             "skill1": {
-                "attack_type": "melee",      # Πρώτη ειδική επίθεση κοντινής απόστασης
-                "range": 120,                # Μεγαλύτερη εμβέλεια από το basic attack
-                "damage_multiplier": 1.4,    # Αυξημένη ζημιά σε σχέση με το basic attack
-                "windup": 0.35,              # Μεγαλύτερη καθυστέρηση επειδή είναι δυνατότερο skill
-                "cooldown": 5.0,             # Μεγάλο cooldown γιατί είναι ειδική ικανότητα
-                "animation": "attack",       # Animation που χρησιμοποιείται
-                "unlock_level": 3,           # Ξεκλειδώνει στο level 3
+                "attack_type": "melee",         # Πρώτη ειδική επίθεση κοντινής απόστασης
+                "attack_shape": "front_aoe",    
+                "range": 110,                   # Eμβέλεια    
+                "aoe_width": 90,                
+                "damage_multiplier": 1.4,       # Αυξημένη ζημιά σε σχέση με το basic attack
+                "windup": 0.35,                 # Μεγαλύτερη καθυστέρηση επειδή είναι δυνατότερο skill
+                "cooldown": 5.0,                # Μεγάλο cooldown γιατί είναι ειδική ικανότητα
+                "animation": "attack03",        # Animation που χρησιμοποιείται
+                "unlock_level": 3,              # Ξεκλειδώνει στο level 3
+                "energy_cost": 0.25,
             },
 
             "skill2": {
-                "attack_type": "melee",      # Δεύτερη ειδική επίθεση του Warrior
-                "range": 200,                # Ακόμα μεγαλύτερη εμβέλεια
+                "attack_type": "melee",      # Δεύτερη ειδική επίθεση
+                "attack_shape": "side_aoe",
+                "range": 130,                # Eμβέλεια
+                "aoe_width": 100,
                 "damage_multiplier": 1.8,    # Μεγαλύτερη ζημιά από skill1
                 "windup": 0.45,              # Μεγαλύτερος χρόνος προετοιμασίας
                 "cooldown": 10.0,            # Μεγάλο cooldown λόγω ισχυρής επίθεσης
-                "animation": "attack",       # Animation επίθεσης
+                "animation": "attack02",     # Animation επίθεσης
                 "unlock_level": 5,           # Ξεκλειδώνει στο level 5
+                "energy_cost": 0.45,
             },
         },
     },
@@ -403,28 +412,33 @@ PLAYER_TYPES = {
                 "animation": "attack",
                 "unlock_level": 1,
                 "lane_half_width": 40,
+                "energy_cost": 0.0,
             },
 
             "skill1": {
                 "attack_type": "melee",
-                "range": 300,
-                "damage_multiplier": 1.5,
+                "attack_shape": "front_aoe",
+                "range": 220,
+                "aoe_width": 130,
+                "damage_multiplier": 1.6,
                 "windup": 0.45,
-                "cooldown": 5.0,
-                "animation": "attack",
+                "cooldown": 6.0,
+                "animation": "attack03",
                 "unlock_level": 3,
-                "lane_half_width": 50,
+                "energy_cost": 0.35,
             },
 
             "skill2": {
-                "attack_type": "ranged",    # Η επίθεση ελέγχει αν ο στόχος βρίσκεται στην ίδια κατεύθυνση και μπορεί να χτυπήσει από απόσταση
-                "range": 360,
-                "damage_multiplier": 2.0,
+                "attack_type": "melee",
+                "attack_shape": "side_aoe",
+                "range": 260,
+                "aoe_width": 150,
+                "damage_multiplier": 2.2,
                 "windup": 0.60,
-                "cooldown": 10.0,
-                "animation": "attack",
+                "cooldown": 12.0,
+                "animation": "attack02",
                 "unlock_level": 5,
-                "lane_half_width": 60,      # Μισό πλάτος της λωρίδας επίθεσης. Όσο μεγαλύτερο είναι, τόσο πιο εύκολα πετυχαίνει στόχο στην ίδια ευθεία
+                "energy_cost": 0.55,
             },
         },
     },
@@ -452,28 +466,28 @@ PLAYER_TYPES = {
                 "animation": "attack",
                 "unlock_level": 1,
                 "lane_half_width": 32,
+                "energy_cost": 0.0,
             },
 
             "skill1": {
-                "attack_type": "ranged",
-                "range": 180,
-                "damage_multiplier": 1.35,
-                "windup": 0.30,
-                "cooldown": 5.0,
-                "animation": "attack",
+                "name": "Rapid Fire",
                 "unlock_level": 3,
-                "lane_half_width": 36,
+                "energy_cost": 0.25,
+                "cooldown": 8.0,
+                "duration": 5.0,
+                "attack_speed_multiplier": 0.5,
+                "type": "buff",
             },
 
             "skill2": {
-                "attack_type": "ranged",
-                "range": 250,
-                "damage_multiplier": 1.7,
-                "windup": 0.40,
-                "cooldown": 10.0,
-                "animation": "attack",
+                "name": "Dash Gun",
+                "type": "dash",
                 "unlock_level": 5,
-                "lane_half_width": 42,
+                "energy_cost": 0.30,
+                "cooldown": 6.0,
+                "dash_distance": 90,
+                "dash_duration": 0.18,
+                "animation": "attack02",
             },
         },
     },
@@ -602,3 +616,33 @@ def get_dragon_runtime_defaults(defs: dict, spawn_x: float, spawn_y: float, now:
         "last_back_hit_by": None,   # Ποιος παίκτης τον χτύπησε από πίσω
         "last_back_hit_dir": None,  # Προς ποια κατεύθυνση πρέπει να γυρίσει μετά από back hit
     }
+
+# Κλάση για εξαγωγή στατιστικών
+class PerformanceStats:
+    def __init__(self, filename, headers):
+        os.makedirs("metrics", exist_ok=True)
+
+        self.filepath = os.path.join("metrics", filename)
+        self.file = open(self.filepath, "w", newline="", encoding="utf-8")
+        self.writer = csv.writer(self.file)
+
+        self.writer.writerow(headers)
+        self.file.flush()
+
+        self.start_time = time.perf_counter()
+        self.closed = False
+
+    def elapsed_time(self):
+        return time.perf_counter() - self.start_time
+
+    def write_row(self, row):
+        if self.closed:
+            return
+
+        self.writer.writerow(row)
+        self.file.flush()
+
+    def close(self):
+        if not self.closed:
+            self.file.close()
+            self.closed = True

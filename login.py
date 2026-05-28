@@ -1,6 +1,8 @@
 import arcade   
 import math     # Βιβλιοθήκη για pulse εφέ σε κείμενο
 
+from db_game import ensure_classes_exist, ensure_items_exist
+
 class MenuView(arcade.View):
     def __init__(self):
         super().__init__()
@@ -60,6 +62,9 @@ class MenuView(arcade.View):
 
     # Μέθοδος για την εμφάνιση επικεφαλίδας και επιλογών για το μενού
     def on_show_view(self):
+        ensure_classes_exist()
+        ensure_items_exist()
+
         self.sound_on_icon.visible = True       # Στην εκκίνηση φαίνεται το sound on Sprite
         self.sound_off_icon.visible = False
 

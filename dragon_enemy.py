@@ -182,7 +182,9 @@ def ground_attack_target(e, players):
 
         # Υπολογίζουμε τη θέση του παίκτη σε σχέση με τον dragon
         dx = p["x"] - e["x"]
-        dy = p["y"] - e["y"]
+        
+        attack_y = e["y"] + defs.get("ground_attack_y_offset", 0)
+        dy = p["y"] - attack_y
 
         if abs(dy) > attack_half_width:     # Ο παίκτης πρέπει να είναι περίπου στο ίδιο ύψος με τον dragon
             continue

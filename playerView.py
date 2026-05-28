@@ -214,6 +214,11 @@ class CreatePlayerView(arcade.View):
         elif key == arcade.key.ENTER:
             self.confirm_nickname()
 
+        # Επιστροφή στο κεντρικό μενού με Escape
+        elif key == arcade.key.ESCAPE:
+            from login import MenuView
+            self.window.show_view(MenuView())
+
     # Επιβεβαιώνει το nickname και προχωρά στην επιλογή κλάσης
     def confirm_nickname(self):
         # Έλεγχος αν το nickname είναι κενό
