@@ -15,9 +15,9 @@ from game_session import GameSessionManager
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-TILE_SCALING = 1.0                      # Scale Πλακιδίων
+TILE_SCALING = 1.0                      # Κλίμακα φόρτωσης των tilemaps
 
-regions = { # Φόρτωση των διαθέσιμων περιοχών του παιχνιδιού
+regions = { # Φόρτωση όλων των περιοχών του παιχνιδιού από τα αντίστοιχα TMX αρχεία
     "firstRegion": Region("firstRegion", "assets/maps/firstRegion.tmx", TILE_SCALING),
     "secondRegion": Region("secondRegion", "assets/maps/secondRegion.tmx", TILE_SCALING),
     "thirdRegion": Region("thirdRegion", "assets/maps/thirdRegion.tmx", TILE_SCALING),
@@ -26,28 +26,29 @@ regions = { # Φόρτωση των διαθέσιμων περιοχών του
 
 START_REGION = "firstRegion"    # Αρχική περιοχή στην οποία εμφανίζονται οι παίκτες όταν συνδέονται
 
-game_status = "playing"         # Κατάσταση παιχνιδιού
-game_finished_handled = False
+game_status = "playing"         # Γενική κατάσταση του παιχνιδιού, όπως playing, win ή loss
+game_finished_handled = False   # Flag για να μη γίνει παραπάνω από μία φορά η διαδικασία τερματισμού παιχνιδιού
 
+# Διαχειριστής του session, δηλαδή lobby, loading, playing και finished phase
 session = GameSessionManager(lobby_duration=15.0, loading_duration=3.0, finish_duration=3.0)
 
-# Διαστάσεις παίκτη
+# Διαστάσεις hitbox/σώματος παίκτη που χρησιμοποιούνται σε collision checks
 PLAYER_WIDTH  = 32
 PLAYER_HEIGHT = 48
 
-# Ρυθμός ανανέωσης ζωής/ενέργειας
+# Ρυθμός αναπλήρωσης energy και HP ανά δευτερόλεπτο
 ENERGY_REGEN_PER_SECOND = 0.01
 HP_REGEN_PER_SECOND = 0.2
 
-SPEED = 5             # Ταχύτητα κίνησης του παίκτη
+SPEED = 5               # Βασική ταχύτητα κίνησης του παίκτη
 
-# Ρυθμίσεις για ανίχνευση "κολλήματος" εχθρού, αν δεν έχει ουσιαστική μετακίνηση για κάποιο χρόνο, θεωρείται stuck
+# Ρυθμίσεις για ανίχνευση εχθρού που έχει κολλήσει, αν ένας εχθρός δεν μετακινηθεί αρκετά για συγκεκριμένο χρόνο, ενεργοποιείται προσωρινή κίνηση ξεκολλήματος
 STUCK_THRESHOLD = 1.0     # δευτερόλεπτα χωρίς ουσιαστική πρόοδο
 UNSTUCK_DURATION = 0.8    # διάρκεια κίνησης για ξεκόλλημα
 MIN_PROGRESS_PX = 0.6     # ελάχιστη μετακίνηση σε pixels ώστε να θεωρηθεί πρόοδος
 
-PLAYER_ANIM_FRAME_TIME = 0.12
-PLAYER_ATTACK_ANIM_FRAMES = {
+PLAYER_ANIM_FRAME_TIME = 0.12   # Χρόνος ανά frame animation παίκτη, για να εκτιμά ο server τη διάρκεια επίθεσης και το timing των hits
+PLAYER_ATTACK_ANIM_FRAMES = {   # Πλήθος frames για κάθε attack animation ανά κλάση
     "Warrior": {
         "attack": 6,
         "attack02": 6,
@@ -67,44 +68,40 @@ PLAYER_ATTACK_ANIM_FRAMES = {
     },
 }
 
-server_start_time = time.time() # Χρόνος εκκίνησης server
-PLAYER_TIMEOUT_SECONDS = 3.0
-disconnected_active_players = {}
+server_start_time = time.time()     # Χρονική στιγμή εκκίνησης του server, χρησιμοποιείται για elapsed time
+PLAYER_TIMEOUT_SECONDS = 3.0        # Αν δεν λαμβάνεται heartbeat/input από έναν παίκτη για αυτό το διάστημα, θεωρείται inactive
+disconnected_active_players = {}    # Προσωρινή αποθήκευση active παικτών που αποσυνδέθηκαν/έγιναν timeout
 
-ctx = zmq.asyncio.Context()     # Δημιουργία του zmq context για τη σύνδεση με τα sockets
+ctx = zmq.asyncio.Context()         # Δημιουργία του zmq context για τη σύνδεση με τα sockets
 
-# Movement input (PULL): Δημιουργία socket για να λαμβάνει τα inputs από τους παίκτες
+# PULL socket: δέχεται inputs από τους clients, όπως movement, attacks και item actions
 pull_socket = ctx.socket(zmq.PULL)
 pull_socket.bind("tcp://*:5555")    # Ακούμε στις εισερχόμενες συνδέσεις στην θύρα 5555
 
-# Broadcast state (PUB): Δημιουργία socket για να στέλνει την κατάσταση του παιχνιδιού στους πελάτες
+# PUB socket: δημοσιεύει το game state προς όλους τους clients
 pub_socket = ctx.socket(zmq.PUB)
 pub_socket.bind("tcp://*:5556")     # Ακούμε για να στείλουμε κατάσταση στους πελάτες στη θύρα 5556
 
-# Control socket (REQ/REP): Δημιουργία socket για σύνδεση/αποσύνδεση με τους πελάτες (request-response)
+# REP socket: δέχεται control requests από clients, όπως connect και disconnec
 control_socket = ctx.socket(zmq.REP)
 control_socket.bind("tcp://*:5557") # Ακούμε για αιτήματα σύνδεσης και αποσύνδεσης στη θύρα 5557
 
-# Player data: Λεξικό που περιέχει τα δεδομένα των παικτών
-players = {}          # pid → {x, y} (πληροφορίες για την θέση κάθε παίκτη)
-enemies = {}
+players = {}          # Λεξικό με όλα τα δεδομένα των συνδεδεμένων παικτών
+enemies = {}          # Λεξικό με όλα τα δεδομένα των εχθρών του παιχνιδιού
 
-connected = set()     # Σύνολο παικτών σε σειρά σύνδεσης
+connected = set()     # Σύνολο με τους συνδεδεμένους παίκτες
 
-next_spawn_index = 0  # Δείκτης για κυκλική επιλογή επόμενου spawn point παίκτη
+next_spawn_index = 0  # Δείκτης για κυκλική επιλογή spawn point όταν συνδέονται νέοι παίκτες
 
-# Φόρτωση εχθρών από το spawn του tiled
+# Δημιουργία των εχθρών από τα enemy spawn objects που υπάρχουν στα TMX maps
 for region_name, region in regions.items():
     for (enemy_id, enemy_type, x, y) in region.enemy_spawns:
+        defs = get_enemy_type_defs(enemy_type)  # Παίρνουμε τα στατιστικά και τις ρυθμίσεις του συγκεκριμένου τύπου εχθρού
 
-        defs = get_enemy_type_defs(enemy_type)
-
+        # Runtime state του εχθρού
         enemy_data = {
-            # Περιοχή εχθρού
-            "region": region_name,
-
-            # Είδος εχθρού
-            "type": enemy_type,
+            "region": region_name,  # Περιοχή εχθρού
+            "type": enemy_type,     # Είδος εχθρού
 
             # Τρέχουσα θέση και αρχική θέση spawn
             "x": x,
@@ -116,7 +113,7 @@ for region_name, region in regions.items():
             "state": "idle",
             "dir": "right" if is_dragon_type(enemy_type) else "down",
             "dead": False,
-            "hurt_seq": 0,
+            "hurt_seq": 0,  # Μετρητής hurt animation που αυξάνεται κάθε φορά που ο εχθρός δέχεται hit, ώστε οι clients να ξέρουν πότε να παίξουν νέο hurt animation
 
             # Στατιστικά μάχης
             "hp": defs["hp_max"],
@@ -143,9 +140,9 @@ for region_name, region in regions.items():
             # Χρονισμός επιθέσεων
             "windup": defs["windup"],
             "attack_cooldown": 1.0 / defs["attack_speed"],
-            "next_attack_time": 0.0,
-            "pending_hit_time": 0.0,
-            "attack_seq": 0,
+            "next_attack_time": 0.0,    
+            "pending_hit_time": 0.0,   # Χρονική στιγμή στην οποία θα εφαρμοστεί το damage μετά το windup της επίθεσης
+            "attack_seq": 0,           # Μετρητής attack animation που αυξάνεται κάθε φορά που ξεκινά νέα επίθεση, ώστε οι clients να κάνουν reset το attack animation
 
             # Τρέχων στόχος και μεταβλητές για stuck handling
             "target": None,
@@ -157,7 +154,7 @@ for region_name, region in regions.items():
             "unstuck_side": 1,
         }
 
-        if is_dragon_type(enemy_type):
+        if is_dragon_type(enemy_type):  # Αν ο εχθρός είναι dragon, προστίθενται επιπλέον runtime πεδία για τη δική του ειδική συμπεριφορά
             enemy_data.update(get_dragon_runtime_defaults(defs, x, y, time.time()))
 
         enemies[enemy_id] = enemy_data
@@ -194,46 +191,46 @@ def rect_contains_point(rect, x, y):
         rect["y"] <= y <= rect["y"] + rect["height"]
     )
 
+# Επιστρέφει True αν ο στόχος της συγκεκριμένης περιοχής έχει ολοκληρωθεί
 def is_region_objective_complete(region_name):
     return get_region_objective_info(region_name).get("complete", True)
 
+# Υπολογίζει την πρόοδο του objective για μια περιοχή και επιστρέφει το κείμενο, το πόσοι στόχοι απομένουν και αν έχει ολοκληρωθεί
 def get_region_objective_info(region_name):
     remaining = 0
 
-    # Area 1 και Area 2: όλοι οι enemies
-    if region_name in ("firstRegion", "secondRegion"):
+    if region_name in ("firstRegion", "secondRegion"):  # Στις δύο πρώτες περιοχές ο στόχος είναι να νικηθούν όλοι οι enemies της περιοχής
         for e in enemies.values():
-            if e.get("region") != region_name:
+            if e.get("region") != region_name:          # Μετράμε μόνο enemies που ανήκουν στη συγκεκριμένη περιοχή
                 continue
 
-            if not e.get("dead", False):
+            if not e.get("dead", False):                # Αν ο enemy δεν είναι νεκρός, προσμετράται στους στόχους που απομένουν
                 remaining += 1
 
-        return {
+        return {    # Επιστρέφουμε πληροφορίες objective για να σταλούν στον client
             "text": "Defeat all enemies",
             "remaining": remaining,
             "complete": remaining == 0,
         }
 
-    # Area 3 και Area 4: μόνο dragons
-    if region_name in ("thirdRegion", "fourthRegion"):
+    if region_name in ("thirdRegion", "fourthRegion"):  # Στις δύο τελευταίες περιοχές ο στόχος αφορά μόνο τους dragons
         for e in enemies.values():
-            if e.get("region") != region_name:
+            if e.get("region") != region_name:          # Αγνοούμε enemies από άλλες περιοχές
                 continue
 
-            if not is_dragon_type(e.get("type", "")):
+            if not is_dragon_type(e.get("type", "")):   # Μετράμε μόνο dragon enemies
                 continue
 
-            if not e.get("dead", False):
+            if not e.get("dead", False):                # Αν ο dragon δεν είναι νεκρός, παραμένει ως στόχος
                 remaining += 1
 
-        return {
+        return {        
             "text": "Defeat all dragons",
             "remaining": remaining,
             "complete": remaining == 0,
         }
 
-    return {
+    return {        # Για περιοχές χωρίς objective, θεωρούμε ότι ο στόχος είναι ήδη ολοκληρωμένος
         "text": "",
         "remaining": 0,
         "complete": True,
@@ -243,10 +240,10 @@ def get_region_objective_info(region_name):
 def player_transition(player):
     global game_status
 
-    if game_status != "playing":
+    if game_status != "playing":    # Transitions επιτρέπονται μόνο όσο το παιχνίδι είναι ενεργό
         return
 
-    if player.get("dead", False):
+    if player.get("dead", False):   # Νεκροί παίκτες δεν μπορούν να αλλάξουν περιοχή
         return
 
     current_region_name = player["region"]
@@ -256,11 +253,11 @@ def player_transition(player):
     for tr in current_region.transitions:
         if rect_contains_point(tr, player["x"], player["y"]):
 
-            # Πρώτα ελέγχουμε αν ολοκληρώθηκε ο στόχος της περιοχής
+            # Ο παίκτης μπορεί να περάσει στο επόμενο region μόνο αν έχει ολοκληρωθεί το objective
             if not is_region_objective_complete(current_region_name):
                 return
 
-            # Αν το transition είναι τελικό σημείο νίκης, δεν ψάχνουμε target_map
+            # Αν το transition έχει action win, σημαίνει ότι είναι το τελικό σημείο νίκης
             action = tr.get("action")
             if action == "win":
                 game_status = "win"
@@ -268,21 +265,23 @@ def player_transition(player):
                 print(f"VICTORY: Player {player['nickname']} reached the final transition")
                 return
 
-            # Κανονικό transition σε άλλο region
+            # Για κανονικό transition, διαβάζουμε το target region και το spawn point
             target_region_name = tr["target_map"]
             target_spawn_name = tr["target_spawn"]
 
-            if target_region_name not in regions:
+            if target_region_name not in regions:       # Έλεγχος ότι το target region υπάρχει στο dictionary regions
                 print(f"Unknown target region: {target_region_name}")
                 return
 
+            # Παίρνουμε τη θέση spawn στο target region
             target_region = get_region(target_region_name)
             spawn_pos = target_region.get_named_spawn(target_spawn_name)
 
-            if spawn_pos is None:
+            if spawn_pos is None:       # Αν δεν βρεθεί το spawn point, δεν γίνεται transition
                 print(f"Spawn '{target_spawn_name}' not found in region '{target_region_name}'")
                 return
 
+            # Ενημερώνουμε region και θέση παίκτη, από το επόμενο game state ο client θα φορτώσει το αντίστοιχο map
             player["region"] = target_region_name
             player["x"], player["y"] = spawn_pos
 
@@ -378,8 +377,7 @@ def move_enemy(e, delta_x, delta_y):
     map_width = region.map_width
     map_height = region.map_height
 
-    # Κίνηση στον άξονα X
-    new_x = current_x + delta_x
+    new_x = current_x + delta_x     # Κίνηση στον άξονα X
 
     # Περιορισμός στον άξονα Χ ώστε να μείνει μέσα στα όρια του χάρτη
     w = e["hitbox_w"]
@@ -391,11 +389,8 @@ def move_enemy(e, delta_x, delta_y):
         e["x"] = new_x
         moved = moved or (abs(delta_x) > 1e-6)
 
-    # Κίνηση στον άξονα Y
-    new_y = current_y + delta_y
-
-    # Περιορισμός στον άξονα Y ώστε να μείνει μέσα στα όρια του χάρτη
-    new_y = max(h/2, min(new_y, map_height - h/2))
+    new_y = current_y + delta_y                     # Κίνηση στον άξονα Y
+    new_y = max(h/2, min(new_y, map_height - h/2))  # Περιορισμός στον άξονα Y ώστε να μείνει μέσα στα όρια του χάρτη
 
     # Αν δεν υπάρχει collision, εφαρμόζουμε τη νέα θέση στον άξονα Y
     if not enemy_hits_walls(e, e["x"], new_y):
@@ -481,19 +476,16 @@ def player_enemy_blocking(prev_players, prev_enemies):
             ):
                 p["x"], p["y"] = prev_player_x, prev_player_y
 
-            # Για τον dragon δεν τον γυρίζουμε πάντα πίσω, γιατί μπορεί να φαίνεται ότι περπατάει
-            # αλλά να μένει ακίνητος όταν ακουμπάει τον παίκτη
+            # Για τον dragon δεν τον γυρίζουμε πάντα πίσω, γιατί μπορεί να φαίνεται ότι περπατάει αλλά να μένει ακίνητος όταν ακουμπάει τον παίκτη
             if e.get("special") == "dragon":
                 old_dx = abs(prev_enemy_x - p["x"])
                 new_dx = abs(e["x"] - p["x"])
 
-                # Αν η νέα θέση τον απομακρύνει από τον παίκτη, την κρατάμε
-                # Έτσι μπορεί να ξεκολλήσει όταν ο παίκτης τον ακουμπάει από πίσω ή από το πλάι
+                # Αν η νέα θέση τον απομακρύνει από τον παίκτη, την κρατάμε και έτσι μπορεί να ξεκολλήσει όταν ο παίκτης τον ακουμπάει από πίσω ή από το πλάι
                 if new_dx >= old_dx:
                     continue
 
-                # Αν όμως η νέα θέση τον φέρνει πιο κοντά στον παίκτη, τότε τον γυρίζουμε πίσω
-                # και αλλάζουμε κατεύθυνση patrol ώστε να μη συνεχίσει να περπατάει πάνω του
+                # Αν όμως η νέα θέση τον φέρνει πιο κοντά στον παίκτη, τότε τον γυρίζουμε πίσω και αλλάζουμε κατεύθυνση patrol ώστε να μη συνεχίσει να περπατάει πάνω του
                 e["x"], e["y"] = prev_enemy_x, prev_enemy_y
 
                 if p["x"] >= e["x"]:
@@ -504,8 +496,7 @@ def player_enemy_blocking(prev_players, prev_enemies):
                     e["dir"] = "right"
 
             else:
-                # Οι απλοί enemies επιστρέφουν στην προηγούμενη θέση τους, ώστε να μη σπρώχνουν τον παίκτη
-                e["x"], e["y"] = prev_enemy_x, prev_enemy_y
+                e["x"], e["y"] = prev_enemy_x, prev_enemy_y     # Οι απλοί enemies επιστρέφουν στην προηγούμενη θέση τους, ώστε να μη σπρώχνουν τον παίκτη
 
 # Μέθοδος που υπολογίζει την ευκλείδεια απόσταση μεταξύ δύο σημείων
 def dist(ax, ay, bx, by):
@@ -577,22 +568,17 @@ def move_enemy_towards_target(e, target_x, target_y, dt=TICK_DT):
         e["dir"] = dir_from_delta(px, py)
         return
 
-    # Κίνηση: δοκιμάζει 3 επιλογές (ευθεία, μόνο άξονα X, μόνο άξονα Y)
-    moved = False
+    moved = False       # Κίνηση: δοκιμάζει 3 επιλογές (ευθεία, μόνο άξονα X, μόνο άξονα Y)
 
-    # Προσπάθεια πλήρους διαγώνιας / ευθείας κίνησης
-    moved = move_enemy(e, dir_x * speed, dir_y * speed)
+    moved = move_enemy(e, dir_x * speed, dir_y * speed) # Προσπάθεια πλήρους διαγώνιας / ευθείας κίνησης
 
-    # Αν απέτυχε, δοκιμή μόνο στον άξονα X
-    if not moved:
-        moved = move_enemy(e, dir_x * speed, 0)
+    if not moved:       # Αν απέτυχε, δοκιμή μόνο στον άξονα X
+        moved = move_enemy(e, dir_x * speed, 0)         
 
-    # Αν απέτυχε και πάλι, δοκιμή μόνο στον άξονα Y
-    if not moved:
+    if not moved:       # Αν απέτυχε και πάλι, δοκιμή μόνο στον άξονα Y
         moved = move_enemy(e, 0, dir_y * speed)
 
-    # Ενημέρωση direction για animation
-    e["dir"] = dir_from_delta(dx, dy)
+    e["dir"] = dir_from_delta(dx, dy)   # Ενημέρωση direction για animation
 
 # Επιλέγει ποια πλάγια κατεύθυνση unstuck (1 ή -1) φέρνει τον εχθρό πιο κοντά στον στόχο
 def choose_unstuck_side_towards_target(e, target_x, target_y):
@@ -600,8 +586,7 @@ def choose_unstuck_side_towards_target(e, target_x, target_y):
     dx = target_x - current_x
     dy = target_y - current_y
 
-    # Ευκλείδεια απόσταση
-    d = dist(current_x, current_y, target_x, target_y)
+    d = dist(current_x, current_y, target_x, target_y)  # Ευκλείδεια απόσταση
 
     # Αν εχθρός και στόχος είναι σχεδόν στο ίδιο σημείο, κρατάμε την προεπιλεγμένη τιμή
     if d < 1e-6:
@@ -617,38 +602,32 @@ def choose_unstuck_side_towards_target(e, target_x, target_y):
     tmp1 = {"x": current_x, "y": current_y, "hitbox_w": e["hitbox_w"], "hitbox_h": e["hitbox_h"]}
     tmp1.update(e)  # Αντιγράφουμε και τα υπόλοιπα στοιχεία που χρειάζονται για collision / movement
 
-    # Δοκιμαστική μετακίνηση στην πρώτη πλάγια κατεύθυνση
-    move_enemy(tmp1, (-dir_y) * speed, (dir_x) * speed)
+    move_enemy(tmp1, (-dir_y) * speed, (dir_x) * speed)     # Δοκιμαστική μετακίνηση στην πρώτη πλάγια κατεύθυνση
 
-    # Παίρνουμε τη νέα δοκιμαστική θέση
-    x1, y1 = tmp1["x"], tmp1["y"]
+    x1, y1 = tmp1["x"], tmp1["y"]           # Παίρνουμε τη νέα δοκιμαστική θέση
 
-    # Υπολογίζουμε την απόσταση από τον στόχο μετά από αυτή τη δοκιμή
-    d1 = dist(target_x, target_y, x1, y1)
+    d1 = dist(target_x, target_y, x1, y1)   # Υπολογίζουμε την απόσταση από τον στόχο μετά από αυτή τη δοκιμή
 
     # Δοκιμή πλάγιας κίνησης με πλευρά -1
     # Δημιουργούμε δεύτερο προσωρινό αντίγραφο του εχθρού, ώστε να ελέγξουμε την αντίθετη κάθετη κατεύθυνση
     tmp2 = {"x": current_x, "y": current_y, "hitbox_w": e["hitbox_w"], "hitbox_h": e["hitbox_h"]}
     tmp2.update(e)
 
-    # Δοκιμαστική μετακίνηση στη δεύτερη πλάγια κατεύθυνση
-    move_enemy(tmp2, (dir_y) * speed, (-dir_x) * speed)
+    move_enemy(tmp2, (dir_y) * speed, (-dir_x) * speed) # Δοκιμαστική μετακίνηση στη δεύτερη πλάγια κατεύθυνση
 
-    # Παίρνουμε τη νέα δοκιμαστική θέση
-    x2, y2 = tmp2["x"], tmp2["y"]
+    x2, y2 = tmp2["x"], tmp2["y"]                       # Παίρνουμε τη νέα δοκιμαστική θέση
 
-    # Υπολογίζουμε την απόσταση από τον στόχο μετά από αυτή τη δοκιμή
-    d2 = dist(target_x, target_y, x2, y2)
+    d2 = dist(target_x, target_y, x2, y2)               # Υπολογίζουμε την απόσταση από τον στόχο μετά από αυτή τη δοκιμή
 
-    # Επιλέγουμε την πλευρά που μικραίνει περισσότερο την απόσταση από τον στόχο
-    return 1 if d1 <= d2 else -1
+    return 1 if d1 <= d2 else -1                        # Επιλέγουμε την πλευρά που μικραίνει περισσότερο την απόσταση από τον στόχο
 
+# Επιστρέφει τις περιοχές στις οποίες υπάρχουν ζωντανοί παίκτες
 def get_active_regions():
     active_regions = set()
 
-    for p in players.values():
-        if not p.get("dead", False):
-            active_regions.add(p.get("region", START_REGION))
+    for p in players.values():          # Διατρέχουμε όλους τους παίκτες που υπάρχουν στον server
+        if not p.get("dead", False):    # Μετράμε μόνο τους παίκτες που δεν είναι νεκροί
+            active_regions.add(p.get("region", START_REGION))   # Προσθέτουμε την περιοχή του παίκτη στο set, αν δεν υπάρχει χρησιμοποιείται fallback
 
     return active_regions
 
@@ -676,8 +655,7 @@ def update_enemy_chase_and_movement(dt=TICK_DT):
 
             continue
 
-        # Παραλείπουμε νεκρούς εχθρούς
-        if e.get("dead"):
+        if e.get("dead"):   # Παραλείπουμε νεκρούς εχθρούς
             continue
 
         # Αν ο εχθρός είναι dragon, δεν ακολουθεί το απλό chase/attack σύστημα των υπόλοιπων εχθρών
@@ -828,13 +806,13 @@ def update_enemy_chase_and_movement(dt=TICK_DT):
 # Μέθοδος που εφαρμόζει τις επιθέσεις των εχθρών στους παίκτες
 def apply_enemy_attacks():
     now = time.time()
-    active_regions = get_active_regions()
+    active_regions = get_active_regions()   # Παίρνουμε μόνο τις περιοχές όπου υπάρχουν ζωντανοί παίκτες
 
-    for e in enemies.values():
-        if e.get("region") not in active_regions:
+    for e in enemies.values():                      # Διατρέχουμε όλους τους εχθρούς
+        if e.get("region") not in active_regions:   # Αγνοούμε εχθρούς που βρίσκονται σε περιοχές χωρίς ζωντανούς παίκτες
             continue
 
-        if e.get("special") == "dragon":
+        if e.get("special") == "dragon":         # Οι dragons έχουν ξεχωριστή λογική επίθεσης και δεν υπολογίζονται σε αυτή τη γενική μέθοδο
             continue
 
         # Αγνοούμε νεκρούς εχθρούς ή εχθρούς χωρίς στόχο
@@ -921,8 +899,7 @@ def enemy_in_player_directional_range(p, e, attack_defs):
     dx = e["x"] - p["x"]
     dy = e["y"] - p["y"]
 
-    # Παίρνουμε την κατεύθυνση της επίθεσης του παίκτη
-    # Αν δεν υπάρχει attack_dir, χρησιμοποιούμε την τρέχουσα κατεύθυνση του παίκτη
+    # Παίρνουμε την κατεύθυνση της επίθεσης του παίκτη, αν δεν υπάρχει attack_dir χρησιμοποιούμε την τρέχουσα κατεύθυνση του παίκτη
     direction = p.get("attack_dir", p.get("dir", "down"))
 
     attack_range = attack_defs.get("range", 70)                 # Απόσταση που φτάνει η επίθεση
@@ -989,7 +966,7 @@ def gain_player_xp(p, amount):
         p["hp_cur"] = hp_cur
         p["hp"] = hp_cur / hp_max
 
-        # Παίρνει επίσης 10% energy στο level up, χωρίς να ξεπεράσει το 100%.
+        # Παίρνει επίσης 10% energy στο level up, χωρίς να ξεπεράσει το 100%
         p["energy"] = min(
             1.0,
             p.get("energy", 1.0) + 0.10
@@ -1003,34 +980,38 @@ def gain_player_xp(p, amount):
         p["xp"] = 0
         p["xp_next"] = 0
 
+# Ελέγχει αν ένας εχθρός βρίσκεται μέσα στην περιοχή χτυπήματος ενός player attack
 def enemy_hit_by_player_attack(p, e, attack_defs):
+    # Παίρνουμε το σχήμα και τον τύπο της επίθεσης από τα attack definitions
     attack_shape = attack_defs.get("attack_shape", "directional")
     attack_type = attack_defs.get("attack_type", "melee")
 
-    # Για ranged attacks, όπως το basic του Marksman,
-    # κρατάμε την παλιά λογική με ευθεία/lane προς την κατεύθυνση που κοιτάει ο παίκτης.
+    # Τα ranged directional attacks, όπως το basic του Marksman, χρησιμοποιούν ξεχωριστό έλεγχο ευθείας/lane προς την κατεύθυνση του παίκτη
     if attack_type == "ranged" and attack_shape == "directional":
         return enemy_in_player_directional_range(p, e, attack_defs)
 
-    attack_dir = p.get("attack_dir", p.get("dir", "down"))
+    attack_dir = p.get("attack_dir", p.get("dir", "down"))  # Κατεύθυνση επίθεσης. Αν δεν υπάρχει attack_dir, χρησιμοποιείται η τρέχουσα κατεύθυνση του παίκτη
 
+    # Θέσεις παίκτη και εχθρού
     px = p["x"]
     py = p["y"]
     ex = e["x"]
     ey = e["y"]
 
+    # Διαφορά θέσης εχθρού σε σχέση με τον παίκτη
     dx = ex - px
     dy = ey - py
 
-    attack_range = attack_defs.get("range", 70)
+    attack_range = attack_defs.get("range", 70)     # Μέγιστη εμβέλεια επίθεσης
 
-    # Basic directional attack
+    # Directional attack: χτυπά έναν εχθρό μόνο αν είναι μέσα στην εμβέλεια και βρίσκεται μπροστά από τον παίκτη με βάση την κατεύθυνση επίθεσης
     if attack_shape == "directional":
         d = dist(px, py, ex, ey)
 
-        if d > attack_range:
+        if d > attack_range:    # Αν ο εχθρός είναι εκτός εμβέλειας, δεν δέχεται ζημιά
             return False
 
+        # Έλεγχος ότι ο εχθρός βρίσκεται στη σωστή πλευρά του παίκτη
         if attack_dir == "up" and dy <= 0:
             return False
         if attack_dir == "down" and dy >= 0:
@@ -1042,7 +1023,7 @@ def enemy_hit_by_player_attack(p, e, attack_defs):
 
         return True
 
-    # AOE μπροστά από τον παίκτη
+    # Front AOE: χτυπά περιοχή μπροστά από τον παίκτη, με συγκεκριμένη εμβέλεια και πλάτος
     if attack_shape == "front_aoe":
         half_width = attack_defs.get("aoe_width", 90) / 2
 
@@ -1060,7 +1041,7 @@ def enemy_hit_by_player_attack(p, e, attack_defs):
 
         return False
 
-    # AOE δεξιά και αριστερά από τον παίκτη
+    # Side AOE: χτυπά οριζόντια περιοχή δεξιά και αριστερά από τον παίκτη
     if attack_shape == "side_aoe":
         half_height = attack_defs.get("aoe_width", 100) / 2
 
@@ -1071,8 +1052,9 @@ def enemy_hit_by_player_attack(p, e, attack_defs):
 
 # Μέθοδος που μετακινεί τον παίκτη γρήγορα προς την κατεύθυνση που κοιτάει
 def apply_player_dash(p, dash_distance):
-    direction = p.get("attack_dir", p.get("dir", "down"))
+    direction = p.get("attack_dir", p.get("dir", "down"))   # Παίρνουμε την κατεύθυνση του dash από το attack_dir ή fallback στο dir
 
+    # Μετατροπή κατεύθυνσης σε διανυσματική κίνηση
     dx = 0
     dy = 0
 
@@ -1084,9 +1066,10 @@ def apply_player_dash(p, dash_distance):
         dx = -1
     elif direction == "right":
         dx = 1
-    else:
+    else:   # Αν δεν υπάρχει έγκυρη κατεύθυνση, το dash ακυρώνεται
         return
 
+    # Παίρνουμε την περιοχή του παίκτη για όρια χάρτη και collisions
     region = get_region(p["region"])
     map_width = region.map_width
     map_height = region.map_height
@@ -1096,6 +1079,7 @@ def apply_player_dash(p, dash_distance):
     steps = int(dash_distance / step_size)
 
     for _ in range(steps):
+        # Υπολογισμός νέας πιθανής θέσης
         new_x = p["x"] + dx * step_size
         new_y = p["y"] + dy * step_size
 
@@ -1107,31 +1091,34 @@ def apply_player_dash(p, dash_distance):
         if player_hits_walls(p, new_x, new_y):
             break
 
+        # Εφαρμογή του dash
         p["x"] = new_x
         p["y"] = new_y
 
+# Επαναφέρει το runtime state του παιχνιδιού για νέο session
 def reset_runtime_game_state():
     global game_status, game_finished_handled, next_spawn_index, server_start_time, tick
 
+    # Επαναφορά βασικών μεταβλητών παιχνιδιού
     game_status = "playing"
     game_finished_handled = False
     next_spawn_index = 0
     server_start_time = time.time()
     tick = 0
 
-    reset_enemies()
+    reset_enemies()     # Επαναφορά όλων των εχθρών στις αρχικές τους θέσεις και τιμές
 
     print("Runtime game state reset. New session started.")
 
+# Επαναδημιουργεί όλους τους εχθρούς από τα spawn points των περιοχών
 def reset_enemies():
-    enemies.clear()
+    enemies.clear() # Καθαρίζουμε τους τρέχοντες εχθρούς
 
-    for region_name, region in regions.items():
+    for region_name, region in regions.items(): # Ξαναφορτώνουμε enemies από τα enemy spawns των TMX maps
         for (enemy_id, enemy_type, x, y) in region.enemy_spawns:
+            defs = get_enemy_type_defs(enemy_type)  # Παίρνουμε τα στατιστικά του συγκεκριμένου τύπου εχθρού
 
-            defs = get_enemy_type_defs(enemy_type)
-
-            enemy_data = {
+            enemy_data = {  # Δημιουργούμε νέο runtime state για τον εχθρό
                 "region": region_name,
                 "type": enemy_type,
 
@@ -1179,7 +1166,7 @@ def reset_enemies():
                 "unstuck_side": 1,
             }
 
-            if is_dragon_type(enemy_type):
+            if is_dragon_type(enemy_type):  # Αν ο εχθρός είναι dragon, προστίθενται και τα ειδικά runtime πεδία του dragon
                 enemy_data.update(get_dragon_runtime_defaults(defs, x, y, time.time()))
 
             enemies[enemy_id] = enemy_data
@@ -1190,12 +1177,14 @@ def reset_enemies():
 def apply_level_stats_from_saved_level(p):
     level = p.get("level", 1)
 
-    bonus_levels = max(0, level - 1)
+    bonus_levels = max(0, level - 1)    # Κάθε level πάνω από το 1 δίνει επιπλέον stats
 
+    # Προσθήκη bonus HP, damage και resist με βάση το level
     p["hp_max"] += 15 * bonus_levels
     p["damage"] += 4 * bonus_levels
     p["resist"] += 1 * bonus_levels
 
+    # Ο παίκτης ξεκινά με πλήρες HP μετά τη φόρτωση
     p["hp_cur"] = p["hp_max"]
     p["hp"] = 1.0
 
@@ -1204,7 +1193,7 @@ def load_player_inventory_payload(player_id):
     player_inventory_rows = get_player_inventory(player_id)
 
     player_inventory = []
-    for row in player_inventory_rows:
+    for row in player_inventory_rows:   # Μετατροπή κάθε γραμμής της βάσης σε dictionary για να μπορεί να σταλεί εύκολα στον client
         item_name, quantity, price, category, stackable, max_stack = row
 
         player_inventory.append({
@@ -1218,47 +1207,44 @@ def load_player_inventory_payload(player_id):
 
     return player_inventory
 
-# Αφαιρεί ενεργό buff από item όταν λήξει ή όταν ανανεωθεί
+# Αφαιρεί ενεργό buff από item όταν λήξει 
 def remove_item_buff(p, item_name):
-    buffs = p.setdefault("item_buffs", {})
+    buffs = p.setdefault("item_buffs", {})  # Παίρνουμε ή δημιουργούμε το dictionary των ενεργών item buffs
 
-    if item_name not in buffs:
+    if item_name not in buffs:      # Αν το συγκεκριμένο buff δεν είναι ενεργό, δεν κάνουμε τίποτα
         return
 
-    buff = buffs.pop(item_name)
+    buff = buffs.pop(item_name)     # Αφαιρούμε το buff και αντιστρέφουμε τα bonus που είχε δώσει
 
     p["damage"] -= buff.get("damage_bonus", 0)
     p["resist"] -= buff.get("resist_bonus", 0)
 
-    recompute_item_attack_speed_multiplier(p)
-
+    recompute_item_attack_speed_multiplier(p)   # Μετά την αφαίρεση, ξαναϋπολογίζουμε το συνολικό attack speed multiplier
 
 # Υπολογίζει ξανά το attack speed multiplier από όλα τα ενεργά buffs
 def recompute_item_attack_speed_multiplier(p):
     mult = 1.0
 
-    for buff in p.get("item_buffs", {}).values():
+    for buff in p.get("item_buffs", {}).values():   # Πολλαπλασιάζουμε τα multipliers όλων των ενεργών buffs
         mult *= buff.get("attack_speed_multiplier", 1.0)
 
     p["item_attack_speed_multiplier"] = mult
-
 
 # Ελέγχει αν έχουν λήξει προσωρινά elixir buffs
 def update_item_buffs():
     now = time.time()
 
-    for p in players.values():
+    for p in players.values():  # Ελέγχουμε buffs για κάθε παίκτη
         buffs = p.setdefault("item_buffs", {})
 
-        expired = [
+        expired = [ # Λίστα με buffs των οποίων έχει περάσει ο χρόνος λήξης
             item_name
             for item_name, buff in buffs.items()
             if now >= buff.get("expires_at", 0.0)
         ]
 
-        for item_name in expired:
+        for item_name in expired:   # Αφαιρούμε τα expired buffs
             remove_item_buff(p, item_name)
-
 
 # Εφαρμόζει το effect ενός item στον παίκτη
 def apply_item_effect(p, item_name):
@@ -1492,7 +1478,7 @@ def apply_player_attacks():
             p["gold"] = p.get("gold", 0) + gold_gain
 
             try:
-                update_player_progress(
+                update_player_progress(     # Αποθηκεύουμε στη βάση την ενημερωμένη πρόοδο του παίκτη μετά το kill, δηλαδή gold, XP και level
                     p.get("player_id", ""),
                     int(p.get("gold", 0)),
                     int(p.get("xp", 0)),
@@ -1505,102 +1491,108 @@ def apply_player_attacks():
             # Διαφορετικά αυξάνουμε hurt sequence για animation
             e["hurt_seq"] = e.get("hurt_seq", 0) + 1
 
+# Μηδενίζει την πρόοδο όλων των παικτών που υπάρχουν σε ένα snapshot λίστας
 def reset_progress_for_players_snapshot(player_snapshots):
     for p in player_snapshots:
-        player_id = p.get("player_id")
+        player_id = p.get("player_id")  # Παίρνουμε το database player_id του παίκτ
 
-        if not player_id:
+        if not player_id:       # Αν δεν υπάρχει player_id, δεν μπορούμε να κάνουμε reset στη βάση
             continue
 
-        try:
+        try:    # Επαναφορά progress στη βάση: gold, XP, level και inventory
             reset_player_progress(player_id)
             print(f"Reset progress for player {player_id}")
         except Exception as ex:
             print(f"Error resetting progress for player {player_id}:", ex)
 
+# Για όλους τους παίκτες του τρέχοντος παιχνιδιού, μηδενίζει την πρόοδό τους
 def reset_progress_for_current_game():
+    # Συνδυάζουμε τους ενεργούς παίκτες που υπάρχουν ακόμα στο players με active παίκτες που αποσυνδέθηκαν πρόσφατα αλλά ανήκαν στο ίδιο game
     snapshots = list(players.values()) + list(disconnected_active_players.values())
     reset_progress_for_players_snapshot(snapshots)
 
+# Ελέγχει αν το παιχνίδι πρέπει να τελειώσει με ήττα
 def check_loss_condition():
     global game_status
 
-    if game_status != "playing":
+    if game_status != "playing":    # Αν το game δεν είναι ενεργό, δεν ελέγχουμε loss
         return
 
-    # Αν δεν έχει συνδεθεί κανένας παίκτης, δεν θεωρείται loss
-    if not players:
+    if not players:                 # Αν δεν έχει συνδεθεί κανένας παίκτης, δεν θεωρείται loss
         return
 
-    if session.phase != session.PHASE_PLAYING:
+    if session.phase != session.PHASE_PLAYING:  # Loss ελέγχουμε μόνο όταν το session βρίσκεται πραγματικά στη φάση playing
         return
 
     alive_players = 0
 
-    for pid, p in players.items():
+    for pid, p in players.items():  # Μετράμε μόνο τους active players του session
         if not session.is_active_player(pid):
             continue
 
-        if not p.get("dead", False):
+        if not p.get("dead", False):    # Αν βρεθεί έστω ένας ζωντανός active player, το παιχνίδι συνεχίζεται
             alive_players += 1
 
-    if alive_players == 0:
+    if alive_players == 0:      # Αν κανένας active player δεν είναι ζωντανός, το παιχνίδι τελειώνει με loss
         game_status = "loss"
         session.finish_game("loss")
         print("GAME OVER: All players died")
 
+# Ελέγχει για παίκτες που δεν έχουν στείλει heartbeat, input για αρκετή ώρα και τους αφαιρεί από το παιχνίδι
 def cleanup_stale_players():
     now = time.time()
     stale_pids = []
 
-    for pid, p in players.items():
+    for pid, p in players.items():  # Εντοπίζουμε ποιοι παίκτες έχουν ξεπεράσει το timeout όριο
         last_seen = p.get("last_seen", 0.0)
 
         if now - last_seen >= PLAYER_TIMEOUT_SECONDS:
             stale_pids.append(pid)
 
-    for pid in stale_pids:
+    for pid in stale_pids:  # Αφαιρούμε τους timed out παίκτες
         name = players.get(pid, {}).get("nickname", pid)
         print(f"Player {name} timed out")
 
-        was_active = session.is_active_player(pid)
+        was_active = session.is_active_player(pid)  # Ελέγχουμε αν ο παίκτης ήταν active στο τρέχον session
         player_snapshot = players.get(pid)
 
         # Αν ήταν active player, κρατάμε snapshot πριν αφαιρεθεί
         if was_active and player_snapshot:
             disconnected_active_players[pid] = dict(player_snapshot)
 
-        session_event = session.disconnect_player(pid)
+        session_event = session.disconnect_player(pid)  # Ενημερώνουμε το session ότι ο παίκτης αποσυνδέθηκε
 
-        connected.discard(pid)
+        connected.discard(pid)  # Αφαιρούμε τον παίκτη από τα runtime structures του server
         players.pop(pid, None)
 
-        # Αν ο timed out παίκτης ήταν ο τελευταίος active player
+        # Αν ο timed out παίκτης ήταν ο τελευταίος active player, το παιχνίδι θεωρείται εγκαταλελειμμένο και γίνεται reset
         if session_event == "game_abandoned":
             print("All active players timed out. Game abandoned and reset.")
 
-            reset_progress_for_current_game()
+            reset_progress_for_current_game()       # Μηδενίζουμε την πρόοδο όλων των παικτών που συμμετείχαν στο game
 
+            # Καθαρίζουμε πλήρως τα runtime δεδομένα παικτών και session
             players.clear()
             connected.clear()
             disconnected_active_players.clear()
             reset_runtime_game_state()
             break
 
+# Χειρίζεται την ολοκλήρωση του παιχνιδιού μετά από win ή loss
 def handle_game_finished():
     global game_finished_handled
 
-    if game_status == "playing":
+    if game_status == "playing":    # Αν το παιχνίδι συνεχίζεται, δεν γίνεται τίποτα
         return
 
-    if game_finished_handled:
+    if game_finished_handled:       # Αποφεύγουμε να εκτελεστεί η διαδικασία τέλους πάνω από μία φορά
         return
 
     game_finished_handled = True
 
     print(f"Game finished with status: {game_status}. Resetting player progress...")
 
-    reset_progress_for_current_game()
+    reset_progress_for_current_game()   # Μετά από win ή loss μηδενίζεται η πρόοδος των παικτών του session
 
 # Μέθοδος για το state των παικτών (connect/disconnect)
 async def handle_control():
@@ -1617,34 +1609,38 @@ async def handle_control():
             nickname = msg.get("nickname") or pid
             class_name = msg.get("class_name") or "Warrior"
 
-            # Κανονικοποιούμε το nickname ώστε να μη διαφέρει λόγω κεφαλαίων/κενών
-            normalized_nickname = nickname.strip().lower()
+            normalized_nickname = nickname.strip().lower()  # Κανονικοποιούμε το nickname ώστε να μη διαφέρει λόγω κεφαλαίων/κενών
 
-            existing_pid_for_nickname = None
+            # Ελέγχουμε αν υπάρχει ήδη συνδεδεμένος παίκτης με το ίδιο nickname
+            existing_pid_for_nickname = None    
 
             for existing_pid, existing_player in players.items():
                 if existing_player.get("nickname", "").strip().lower() == normalized_nickname:
                     existing_pid_for_nickname = existing_pid
                     break
 
+            # Ο παίκτης θεωρείται ήδη συνδεδεμένος είτε αν υπάρχει το ίδιο pid, είτε αν υπάρχει άλλος runtime παίκτης με το ίδιο nickname
             player_already_connected = (
                 pid in connected
                 or existing_pid_for_nickname is not None
             )
 
-            # Reconnect επιτρέπεται μόνο στο lobby
+            # Αν ο παίκτης είναι ήδη συνδεδεμένος αλλά το session είναι ακόμα στο lobby, επιτρέπουμε reconnect και αφαιρούμε την παλιά runtime εγγραφή
             if player_already_connected and session.phase == session.PHASE_LOBBY:
                 old_pid = pid
 
+                # Αν βρέθηκε παλιός παίκτης με ίδιο nickname, χρησιμοποιούμε το παλιό pid ώστε να αφαιρεθεί σωστά από players/connected/session
                 if existing_pid_for_nickname is not None:
                     old_pid = existing_pid_for_nickname
 
                 print(f"Reconnecting lobby player '{nickname}'")
 
+                # Καθαρίζουμε την προηγούμενη lobby εγγραφή ώστε να γίνει νέα σύνδεση
                 session.disconnect_player(old_pid)
                 connected.discard(old_pid)
                 players.pop(old_pid, None)
 
+            # Αν ο παίκτης είναι ήδη συνδεδεμένος και το session δεν είναι lobby, απορρίπτουμε τη σύνδεση για να μη δημιουργηθεί διπλός παίκτης στο παιχνίδι
             elif player_already_connected:
                 await control_socket.send_json({
                     "status": "error",
@@ -1653,26 +1649,28 @@ async def handle_control():
                 print(f"Rejected connection for nickname '{nickname}': already in game")
                 continue
 
-            # Αν το session έχει μείνει stuck σε playing/loading/finished αλλά δεν υπάρχουν players,
-            # το καθαρίζουμε ώστε να μπορεί να ξεκινήσει νέο lobby
+            # Αν το session έχει μείνει stuck σε playing/loading/finished αλλά δεν υπάρχουν players, το καθαρίζουμε ώστε να μπορεί να ξεκινήσει νέο lobby
             if session.phase not in (session.PHASE_IDLE, session.PHASE_LOBBY) and not players:
                 print("Session was stuck without players. Resetting to idle.")
                 session.reset_to_idle()
                 reset_runtime_game_state()
 
+            # Ελέγχουμε αν ο παίκτης μπορεί να επανασυνδεθεί σε ενεργό παιχνίδι από snapshot που κρατήθηκε όταν αποσυνδέθηκε
             reconnect_snapshot = disconnected_active_players.get(pid)
             allow_active_reconnect = False
 
+            # Active reconnect επιτρέπεται μόνο όσο το session είναι σε playing
             if session.phase == session.PHASE_PLAYING:
                 reconnect_snapshot = disconnected_active_players.get(pid)
 
+                # Για ασφάλεια, επιβεβαιώνουμε ότι το nickname του snapshot ταιριάζει με το nickname του νέου connect request
                 if reconnect_snapshot:
                     saved_nickname = reconnect_snapshot.get("nickname", "").strip().lower()
 
                     if saved_nickname == normalized_nickname:
                         allow_active_reconnect = True
 
-            # Αν το παιχνίδι έχει ήδη ξεκινήσει ή φορτώνει ή τελειώνει, δεν επιτρέπουμε νέο παίκτη να μπει
+            # Αν το παιχνίδι έχει ήδη ξεκινήσει και δεν πρόκειται για active reconnect, δεν επιτρέπεται νέος παίκτης να μπει στο τρέχον session
             if session.phase not in (session.PHASE_IDLE, session.PHASE_LOBBY) and not allow_active_reconnect:
                 await control_socket.send_json({
                     "status": "error",
@@ -1681,17 +1679,20 @@ async def handle_control():
                 print(f"Rejected connection for {pid}: game already in progress")
                 continue
 
+            # Επανασύνδεση παίκτη που ήταν active στο παιχνίδι και είχε αποσυνδεθεί προσωρινά
             if allow_active_reconnect:
                 print(f"Reconnecting active player '{nickname}'")
 
+                # Ο παίκτης ξαναμπαίνει στους active players του session
                 player_session_phase = session.PHASE_PLAYING
                 session.active_players.add(pid)
 
-                # Παίρνουμε το παλιό runtime state
+                # Επαναφέρουμε το προηγούμενο runtime state του παίκτη και ενημερώνουμε το last_seen ώστε να μη θεωρηθεί αμέσως timed out
                 restored_player = disconnected_active_players.pop(pid)
                 restored_player["last_seen"] = time.time()
                 restored_player["session_phase"] = player_session_phase
 
+                # Ο restored παίκτης μπαίνει ξανά στα runtime structures του server
                 players[pid] = restored_player
                 connected.add(pid)
 
@@ -1701,23 +1702,25 @@ async def handle_control():
                 })
 
                 continue
+
+            # Αν δεν είναι active reconnect, ο παίκτης μπαίνει κανονικά στο lobby μέσω session manager
             else:
                 player_session_phase = session.connect_player(pid)
 
-            try:
+            # Παίρνουμε τα στατιστικά της κλάσης, αν η κλάση δεν είναι έγκυρη γίνεται fallback
+            try:    
                 class_defs = get_player_type_defs(class_name)
             except ValueError:
                 class_name = "Warrior"
                 class_defs = get_player_type_defs(class_name)
 
-            # Προσθήκη του παίκτη στo σύνολο των συνδεδεμένων
-            connected.add(pid)
+            connected.add(pid)      # Προσθέτουμε τον παίκτη στο σύνολο των συνδεδεμένων
 
-            # Περιοχή και spawn σε αυτή
+            # Παίρνουμε τα spawn points της αρχικής περιοχής
             start_region = regions[START_REGION]
             spawn_points = start_region.spawn_points
 
-            # Spawn place
+            # Επιλέγουμε spawn point κυκλικά, ώστε οι παίκτες να μη μπαίνουν όλοι πάντα στο ίδιο σημείο
             spawn_index = next_spawn_index
             next_spawn_index += 1
 
@@ -1725,8 +1728,9 @@ async def handle_control():
 
             hp_max = class_defs.get("hp_max", 100)
 
-            player_row = get_player_by_id(pid)
+            player_row = get_player_by_id(pid)      # Ελέγχουμε αν ο παίκτης υπάρχει ήδη στη βάση
 
+            # Returning player: φορτώνουμε gold, XP, level, nickname και class από τη βάση
             if player_row is not None:
                 db_player_id, db_nickname, db_class_name, db_gold, db_xp, db_level = player_row
 
@@ -1739,21 +1743,22 @@ async def handle_control():
                 class_name = db_class_name
                 class_defs = get_player_type_defs(class_name)
 
-                update_last_login(pid)
-            else:
+                update_last_login(pid)  # Ενημερώνουμε την τελευταία σύνδεση του παίκτη
+
+            else:   # Νέος runtime player χωρίς αποθηκευμένη πρόοδο
                 player_gold = 0
                 player_xp = 0
                 player_level = class_defs.get("level", 1)
 
-            player_inventory = load_player_inventory_payload(pid)
+            player_inventory = load_player_inventory_payload(pid)   # Φορτώνουμε το inventory του παίκτη από τη βάση σε μορφή payload για το game state
 
             # Δημιουργία εγγραφής παίκτη
             players[pid] = {
-                # Θέση
+                # Θέση στον χάρτη
                 "x": x,         
                 "y": y, 
 
-                # Βασικά στοιχεία
+                # Βασικά στοιχεία παίκτη και αποθηκευμένη πρόοδος
                 "nickname": nickname,  
                 "class_name": class_name,
                 "player_id": pid,
@@ -1764,25 +1769,28 @@ async def handle_control():
                 "xp_next": get_xp_next_for_level(player_level),
                 "max_level": class_defs.get("max_level", 10),
 
+                # Στατιστικά μάχης και resources
                 "hp": 1.0,
                 "hp_cur": hp_max,
                 "hp_max": hp_max,
                 "energy": 1.0,
                 "resist": class_defs.get("resist", 0),
                 "damage": class_defs.get("damage", 25),
+
+                # Buffs από items/elixirs
                 "item_buffs": {},
                 "item_attack_speed_multiplier": 1.0,
 
                 "attack_type": class_defs.get("attack_type", "melee"),
                 "move_speed": class_defs.get("move_speed", SPEED),
 
-                # Κατάσταση παίκτη
+                # Κατάσταση animation και ζωής
                 "state": "idle",
                 "dir": "down",
                 "dead": False,
                 "hurt_seq": 0,
 
-                # Στοιχεία επίθεσης
+                # Πεδία επίθεσης, cooldowns και pending hit timing
                 "attack_requested": False,
                 "attack_id": "basic",
                 "attack_dir": "down",
@@ -1800,17 +1808,17 @@ async def handle_control():
                 # Κατεύθυνση κίνησης
                 "move_dir": "STOP",
 
-                # Αρχική περιοχή
+                # Περιοχή, session phase και χρόνος τελευταίας επικοινωνίας
                 "region": START_REGION,
                 "session_phase": player_session_phase,
                 "last_seen": time.time(),
                 }   
             
-            apply_level_stats_from_saved_level(players[pid])
+            apply_level_stats_from_saved_level(players[pid])    # Εφαρμόζουμε τα bonus stats που αντιστοιχούν στο αποθηκευμένο level του παίκτη
 
             print(f"Player {nickname} CONNECTED at spawn {spawn_index}")
 
-            # Επιβεβαίωση σύνδεσης προς client
+            # Στέλνουμε επιβεβαίωση σύνδεσης στον client
             await control_socket.send_json({
                 "status": "ok",
             })
@@ -1821,32 +1829,33 @@ async def handle_control():
             name = players.get(pid, {}).get("nickname", pid)
             print(f"Player {name} DISCONNECTED")
 
+            # Ελέγχουμε αν ο παίκτης συμμετείχε ενεργά στο τρέχον παιχνίδι
             was_active = session.is_active_player(pid)
             player_snapshot = players.get(pid)
 
-            # Αν ήταν active player, κρατάμε snapshot ΠΡΙΝ αφαιρεθεί από players
-            # Έτσι, αν είναι ο τελευταίος και προκαλέσει abandon, θα γίνει reset και αυτός.
+            # Αν ήταν active player, κρατάμε snapshot πριν αφαιρεθεί για να μπορεί να γίνει reset progress ή reconnect ακόμα και μετά την αφαίρεση από players
             if was_active and player_snapshot:
                 disconnected_active_players[pid] = dict(player_snapshot)
 
-            session_event = session.disconnect_player(pid)
+            session_event = session.disconnect_player(pid)  # Ενημερώνουμε το session manager ότι ο παίκτης αποσυνδέθηκε
 
-            # Αφαίρεση από connected players και από το players dict
+            # Αφαιρούμε τον παίκτη από τα runtime structures
             connected.discard(pid)
             players.pop(pid, None)
 
+            # Αν δεν έμεινε κανένας active player, το παιχνίδι θεωρείται abandoned και γίνεται reset της προόδου και του runtime state
             if session_event == "game_abandoned":
                 print("All active players disconnected. Game abandoned and reset.")
 
-                reset_progress_for_current_game()
+                reset_progress_for_current_game()   # Reset progress για όλους τους παίκτες που συμμετείχαν στο τρέχον game
 
+                # Καθαρίζουμε όλα τα runtime δεδομένα και επαναφέρουμε το game για νέο session
                 players.clear()
                 connected.clear()
                 disconnected_active_players.clear()
                 reset_runtime_game_state()
 
-            # Επιβεβαίωση αποσύνδεσης προς client
-            await control_socket.send_json({"status": "ok"})
+            await control_socket.send_json({"status": "ok"})    # Στέλνουμε επιβεβαίωση αποσύνδεσης στον client
 
 # Μέθοδος που λαμβάνει και επεξεργάζεται τα inputs των παικτών
 async def handle_inputs():
@@ -1859,17 +1868,18 @@ async def handle_inputs():
         if pid not in players:
             continue
 
+        # Heartbeat μήνυμα: ενημερώνει το last_seen του παίκτη ώστε να μη θεωρηθεί timed out από τον server
         if msg.get("heartbeat"):
             players[pid]["last_seen"] = time.time()
             continue
 
-        if not session.can_player_play(pid):
+        if not session.can_player_play(pid):    # Inputs γίνονται δεκτά μόνο από παίκτες που συμμετέχουν ενεργά στο playing phase
             continue
 
-        if game_status != "playing":
+        if game_status != "playing":            # Αν το παιχνίδι δεν είναι σε κατάσταση playing, αγνοούμε input ενεργειών
             continue
 
-        # Input κίνησης
+        # Input κίνησης από τον client
         if "move" in msg:
             direction = msg.get("move", "STOP")
 
@@ -1885,7 +1895,7 @@ async def handle_inputs():
         if "buy_item" in msg:
             item_name = msg.get("buy_item")
 
-            if item_name not in (
+            if item_name not in (   # Επιτρέπουμε μόνο συγκεκριμένα items για λόγους ασφάλειας/ελέγχου
                 "Health_Potion",
                 "Energy_Potion",
                 "ElixirOfToughness",
@@ -1894,34 +1904,20 @@ async def handle_inputs():
             ):
                 continue
 
-            success, reason = buy_item_for_player(pid, item_name, 1)
+            success, reason = buy_item_for_player(pid, item_name, 1)    # Η αγορά γίνεται μέσω βάσης, ώστε να ελεγχθεί gold και max stack
 
-            if not success:
+            if not success: # Αν η αγορά απέτυχε, δεν ενημερώνουμε το runtime inventory
                 print(f"Purchase failed for {pid}: {reason}")
                 continue
 
-            # Μετά την αγορά ξαναφορτώνουμε gold και inventory από τη βάση
+            # Μετά την αγορά ξαναφορτώνουμε gold από τη βάση
             player_row = get_player_by_id(pid)
             if player_row is not None:
                 db_player_id, db_nickname, db_class_name, db_gold, db_xp, db_level = player_row
                 players[pid]["gold"] = db_gold
 
-            player_inventory_rows = get_player_inventory(pid)
-
-            player_inventory = []
-            for row in player_inventory_rows:
-                item_name, quantity, price, category, stackable, max_stack = row
-
-                player_inventory.append({
-                    "item_name": item_name,
-                    "quantity": quantity,
-                    "price": price,
-                    "category": category,
-                    "stackable": stackable,
-                    "max_stack": max_stack,
-                })
-
-            players[pid]["inventory"] = player_inventory
+            # Μετά την αγορά ξαναφορτώνουμε inventory από τη βάση
+            players[pid]["inventory"] = load_player_inventory_payload(pid)
 
             print(f"Player {players[pid].get('nickname', pid)} bought {msg.get('buy_item')}")
 
@@ -1929,7 +1925,7 @@ async def handle_inputs():
         if "use_item" in msg:
             item_name = msg.get("use_item")
 
-            if item_name not in (
+            if item_name not in (   # Επιτρέπονται μόνο τα items που υποστηρίζονται από το παιχνίδι
                 "Health_Potion",
                 "Energy_Potion",
                 "ElixirOfToughness",
@@ -1940,28 +1936,25 @@ async def handle_inputs():
 
             p = players[pid]
 
-            # Πρώτα εφαρμόζουμε το effect.
-            # Αν δεν μπορεί να εφαρμοστεί, δεν καταναλώνουμε item.
+            # Εφαρμόζουμε το effect, αν δεν μπορεί να εφαρμοστεί δεν καταναλώνουμε το item
             effect_ok, effect_reason = apply_item_effect(p, item_name)
 
             if not effect_ok:
                 print(f"Use item failed for {pid}: {effect_reason}")
                 continue
 
-            # Αν εφαρμόστηκε, τότε το καταναλώνουμε από τη βάση
-            consumed, reason = consume_item_for_player(pid, item_name)
+            consumed, reason = consume_item_for_player(pid, item_name)  # Αν εφαρμόστηκε, τότε το καταναλώνουμε από τη βάση
 
             if not consumed:
                 print(f"Consume failed for {pid}: {reason}")
 
-                # Αν απέτυχε το consume, καλό είναι να μη μείνει δωρεάν buff.
-                # Για potion δεν είναι κρίσιμο στο test, αλλά για elixir αφαιρούμε το buff.
+                # Αν απέτυχε το consume, αφαιρούμε το elixir buff ώστε να μη μείνει δωρεάν effect
                 if item_name.startswith("Elixir"):
                     remove_item_buff(p, item_name)
 
                 continue
 
-            # Ξαναφορτώνουμε inventory από DB
+            # Ξαναφορτώνουμε inventory από τη βάση μετά την κατανάλωση
             players[pid]["inventory"] = load_player_inventory_payload(pid)
 
             print(f"Player {players[pid].get('nickname', pid)} used {item_name}")
@@ -1978,11 +1971,12 @@ async def handle_inputs():
             if players[pid].get("attack_requested", False):
                 continue
 
+            # Παίρνουμε το attack id και κάνουμε fallback σε basic αν δεν είναι έγκυρο
             attack_id = msg.get("attack_id", "basic")
             if attack_id not in ("basic", "skill1", "skill2"):
                 attack_id = "basic"
 
-            class_name = players[pid].get("class_name", "Warrior")
+            class_name = players[pid].get("class_name", "Warrior")  # Παίρνουμε τα attack definitions της κλάσης του παίκτη
 
             try:
                 class_defs = get_player_type_defs(class_name)
@@ -1991,22 +1985,22 @@ async def handle_inputs():
 
             attacks = class_defs.get("attacks", {})
 
-            if attack_id not in attacks:
+            if attack_id not in attacks:    # Αν το attack δεν υπάρχει για αυτή την κλάση, χρησιμοποιείται το basic
                 attack_id = "basic"
 
             attack_defs = attacks[attack_id]
 
-            # Αν το skill δεν έχει ξεκλειδωθεί, δεν παίζει ούτε animation
+            # Αν το skill δεν έχει ξεκλειδωθεί από το level του παίκτη, δεν ξεκινά ούτε animation ούτε hit
             required_level = attack_defs.get("unlock_level", 1)
             if players[pid].get("level", 1) < required_level:
                 continue
 
-            # Αν δεν υπάρχει αρκετή ενέργεια, δεν παίζει ούτε animation
+            # Αν δεν υπάρχει αρκετή ενέργεια, το attack απορρίπτεται
             energy_cost = attack_defs.get("energy_cost", 0.0)
             if players[pid].get("energy", 1.0) < energy_cost:
                 continue
 
-            next_attack_times = players[pid].setdefault("next_attack_times", {
+            next_attack_times = players[pid].setdefault("next_attack_times", {  # Local cooldowns στον server για κάθε attack
                 "basic": 0.0,
                 "skill1": 0.0,
                 "skill2": 0.0,
@@ -2036,18 +2030,21 @@ async def handle_inputs():
             # Για τα υπόλοιπα attacks παίρνουμε animation από τα stats
             attack_state = attack_defs.get("animation", "attack")
 
+            # Αποθηκεύουμε το attack request στο runtime state του παίκτη
             players[pid]["attack_requested"] = True
             players[pid]["attack_id"] = attack_id
             players[pid]["attack_dir"] = adir.lower()
             players[pid]["dir"] = adir.lower()
 
+            # Ενημερώνουμε το state ώστε οι clients να παίξουν το αντίστοιχο attack animation
             players[pid]["state"] = attack_state
             players[pid]["attack_state"] = attack_state
 
+            # Υπολογίζουμε πόσο θα διαρκέσει το attack animation
             class_name = players[pid].get("class_name", "Warrior")
             anim_duration = get_player_attack_anim_duration(class_name, attack_state)
 
-            players[pid]["attack_anim_until"] = now + anim_duration
+            players[pid]["attack_anim_until"] = now + anim_duration # Μέχρι αυτή τη χρονική στιγμή ο παίκτης θεωρείται ότι βρίσκεται σε attack animation
 
 # Μέθοδος που ενημερώνει και μεταδίδει συνεχώς την κατάσταση του παιχνιδιού
 async def broadcast_state():
@@ -2064,20 +2061,20 @@ async def broadcast_state():
         prev_players = {pid: (p["x"], p["y"]) for pid, p in players.items()}
         prev_enemies = {eid: (e["x"], e["y"]) for eid, e in enemies.items()}
 
-        # Ενημέρωση κίνησης παικτών
+        # Ενημέρωση όλων των παικτώνν
         for p in players.values():
             # Αν ο παίκτης είναι νεκρός, σταματάει να κινείται
             if p.get("dead", False):
                 p["move_dir"] = "STOP"
                 continue
             
-            # Αναπλήρωση energy με αργό ρυθμό
+            # Αναπλήρωση energy με βάση τον ρυθμό ανά δευτερόλεπτο και το tick duration
             p["energy"] = min(
                 1.0,
                 p.get("energy", 1.0) + ENERGY_REGEN_PER_SECOND * TICK_DT
             )
 
-            # Αναπλήρωση HP με αργό ρυθμό
+            # Αναπλήρωση HP με βάση την πραγματική τιμή hp_cur και ενημέρωση του ποσοστού hp που στέλνεται στον client
             hp_max = p.get("hp_max", 100)
             hp_cur = p.get("hp_cur", p.get("hp", 1.0) * hp_max)
 
@@ -2090,13 +2087,13 @@ async def broadcast_state():
             p["hp_max"] = hp_max
             p["hp"] = hp_cur / hp_max
 
-            direction = p.get("move_dir", "STOP")
+            direction = p.get("move_dir", "STOP")       # Παίρνουμε την τελευταία κατεύθυνση κίνησης που έστειλε ο client
 
-            # Αρχικά θεωρούμε ως νέα θέση την τρέχουσα
+            # Αρχικά η νέα θέση είναι ίδια με την τρέχουσα
             new_x = p["x"]
             new_y = p["y"]
 
-            # Εφαρμογή κίνησης με βάση την εντολή που έστειλε ο client
+            # Υπολογισμός νέας θέσης με βάση την κατεύθυνση
             if direction == "UP":
                 new_y += SPEED
             elif direction == "DOWN":
@@ -2106,6 +2103,7 @@ async def broadcast_state():
             elif direction == "RIGHT":
                 new_x += SPEED
 
+            # Παίρνουμε τα όρια της περιοχής στην οποία βρίσκεται ο παίκτης
             region = get_region(p["region"])
             map_width = region.map_width
             map_height = region.map_height
@@ -2121,16 +2119,16 @@ async def broadcast_state():
             if not player_hits_walls(p, p["x"], new_y):
                 p["y"] = new_y
 
-            # Ενημέρωση visual state / direction
+            # Ενημέρωση visual state και direction του παίκτη
             if not p.get("dead", False):
                 now = time.time()
 
-                # Όσο διαρκεί το attack animation, δεν αλλάζουμε state / direction από την κίνηση
+                # Όσο διαρκεί το attack animation, δεν αλλάζουμε state από την κίνηση ώστε να μη διακοπεί οπτικά η επίθεση
                 if now < p.get("attack_anim_until", 0.0):
                     p["dir"] = p.get("attack_dir", p.get("dir", "down"))
                     p["state"] = p.get("attack_state", "attack")
                 else:
-                    # Αν δεν παίζει attack animation, το state εξαρτάται από την κίνηση
+                    # Αν δεν υπάρχει ενεργό attack animation, το state εξαρτάται από την κίνηση
                     if direction == "UP":
                         p["dir"] = "up"
                         p["state"] = "walk"
@@ -2146,16 +2144,18 @@ async def broadcast_state():
                     else:
                         p["state"] = "idle"
             
-            player_transition(p)
+            player_transition(p)        # Ελέγχουμε αν ο παίκτης πάτησε σε transition area για αλλαγή περιοχής ή τελική νίκη
 
-        cleanup_stale_players()
+        cleanup_stale_players()         # Αφαιρεί παίκτες που δεν έχουν στείλει heartbeat/input για αρκετή ώρα
 
-        session_events = session.update()
+        session_events = session.update()   # Ενημερώνει το session manager και επιστρέφει πιθανά events αλλαγής φάσης
 
+        # Όταν ξεκινά το playing phase, επαναφέρουμε το runtime game state
         for event in session_events:
             if event == "playing_started":
                 reset_runtime_game_state()
 
+            # Όταν ολοκληρωθεί η finished φάση, καθαρίζουμε παίκτες και runtime state
             elif event == "finished_cleared":
                 reset_progress_for_current_game()
 
@@ -2164,28 +2164,34 @@ async def broadcast_state():
                 disconnected_active_players.clear()
                 reset_runtime_game_state()
 
+        # Εκτελούμε gameplay ενημερώσεις μόνο όσο το παιχνίδι είναι ενεργό
         if session.phase == session.PHASE_PLAYING and game_status == "playing":
             enemy_ai_timer += TICK_DT
 
+            # Ενημέρωση εχθρών όταν περάσει το προκαθορισμένο interval
             if enemy_ai_timer >= ENEMY_AI_INTERVAL:
                 update_enemy_chase_and_movement(enemy_ai_timer)
                 enemy_ai_timer = 0.0
 
+            # Εφαρμογή combat και buffs
             apply_enemy_attacks()
             apply_player_attacks()
             update_item_buffs()
+
+            # Διόρθωση επικάλυψης παικτών/εχθρών και έλεγχος ήττας
             player_enemy_blocking(prev_players, prev_enemies)
             check_loss_condition()
 
-        handle_game_finished()
+        handle_game_finished()  # Αν το παιχνίδι έχει τελειώσει, χειριζόμαστε το reset προόδου μία φορά
 
-        # Δημιουργούμε καθαρό payload παικτών για αποστολή στους clients
-        players_payload = {}
+        players_payload = {}    # Δημιουργούμε καθαρό payload παικτών για αποστολή στους clients
 
         for pid, p in players.items():
+            # Αν το session παίζεται, δεν στέλνουμε παίκτες που δεν είναι active στο τρέχον game
             if session.phase == session.PHASE_PLAYING and not session.is_active_player(pid):
                 continue
 
+            # Δημιουργούμε λίστα με τα ενεργά elixirs και τον χρόνο που απομένει
             active_elixirs = []
 
             now = time.time()
@@ -2200,8 +2206,10 @@ async def broadcast_state():
                         "duration": buff.get("duration", 60.0),
                     })
 
+            # Υπολογίζουμε το objective της περιοχής του παίκτη ώστε ο client να εμφανίσει σωστό objective text progress
             objective_info = get_region_objective_info(p.get("region", START_REGION))
 
+            # Payload του συγκεκριμένου παίκτη που θα σταλεί στους clients
             players_payload[pid] = {
                 "x": p["x"],
                 "y": p["y"],
@@ -2233,6 +2241,7 @@ async def broadcast_state():
                 "objective_complete": objective_info["complete"],
             }
 
+        # Έλεγχος loss, finished πριν σταλεί το state στους client
         check_loss_condition()
         handle_game_finished()
 
