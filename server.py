@@ -4,7 +4,7 @@ import zmq.asyncio
 import sys
 import time
 from sprites import get_enemy_type_defs, get_player_type_defs
-from stats import (XP_REQUIREMENTS, is_dragon_type, is_dragon_damageable_state, get_dragon_runtime_defaults, PerformanceStats)
+from stats import (XP_REQUIREMENTS, is_dragon_type, is_dragon_damageable_state, get_dragon_runtime_defaults)
 from dragon_enemy import (update_dragon, find_nearest_player_in_region, player_is_behind_dragon, direction_from_dragon_to_player)
 import math
 from region import Region
@@ -164,21 +164,6 @@ tick = 0            # Μετρητής "tick" για το παιχνίδι
 
 ENEMY_AI_INTERVAL = 0.04    # Δεν ενημερώνουμε τους εχθρούς σε κάθε server tick, αλλά κάθε 0.04 sec για να μειώνεται το φόρτο του server
 enemy_ai_timer = 0.0        # Μετρητής που μετράει πόσος χρόνος έχει περάσει από την τελευταία ενημέρωση των εχθρών
-
-server_stats = PerformanceStats(    # Αντικείμενο για την καταγραφή μετρικών απόδοσης του server σε αρχείο CSV
-    "server_metrics.csv",
-    [
-        "time_seconds",     # Χρόνος από την έναρξη της μέτρησης
-        "avg_tick_ms",      # Μέσος χρόνος επεξεργασίας tick στο χρονικό διάστημα μέτρησης
-        "max_tick_ms",      # Μέγιστος χρόνος επεξεργασίας tick στο χρονικό διάστημα μέτρησης
-        "players",          # Πλήθος συνδεδεμένων παικτών
-        "active_enemies"    # Πλήθος ενεργών εχθρών, δηλαδή εχθρών σε περιοχές με παίκτη
-    ]
-)
-
-server_metrics_interval = 20.0  # Κάθε πόσα δευτερόλεπτα θα γράφονται συγκεντρωτικά metrics στο CSV
-server_metrics_timer = 0.0      # Μετρητής που μετράει πόσος χρόνος έχει περάσει από την τελευταία καταγραφή metrics
-server_tick_ms_samples = []     # Λίστα που αποθηκεύει προσωρινά τα tick_ms κάθε tick
 
 # Επιστρέφει το αντικείμενο Region με βάση το όνομα της περιοχής
 def get_region(region_name: str) -> Region:
@@ -2048,7 +2033,7 @@ async def handle_inputs():
 
 # Μέθοδος που ενημερώνει και μεταδίδει συνεχώς την κατάσταση του παιχνιδιού
 async def broadcast_state():
-    global tick, server_metrics_timer, server_tick_ms_samples, enemy_ai_timer
+    global tick, server_metrics_timer, enemy_ai_timer
 
     while True:
         tick += 1       # Αύξηση του tick για κάθε frame / update
@@ -2284,38 +2269,6 @@ async def broadcast_state():
         # Τέλος μέτρησης χρόνου επεξεργασίας του tick
         tick_end = time.perf_counter()
         tick_ms = (tick_end - tick_start) * 1000.0
-
-        # Αποθήκευση του tick_ms στο προσωρινό sample list
-        server_tick_ms_samples.append(tick_ms)
-
-        # Αυξάνουμε τον timer με βάση το server tick interval
-        server_metrics_timer += TICK_DT
-
-        # Κάθε 20 δευτερόλεπτα γράφουμε συγκεντρωτικά αποτελέσματα στο CSV
-        if server_metrics_timer >= server_metrics_interval:
-            current_time = server_stats.elapsed_time()
-
-            avg_tick_ms = sum(server_tick_ms_samples) / len(server_tick_ms_samples)
-            max_tick_ms = max(server_tick_ms_samples)
-
-            active_regions = get_active_regions()
-
-            active_enemy_count = sum(
-                1 for e in enemies.values()
-                if e.get("region") in active_regions and not e.get("dead", False)
-            )
-
-            server_stats.write_row([
-                round(current_time, 3),
-                round(avg_tick_ms, 3),
-                round(max_tick_ms, 3),
-                len(players),
-                active_enemy_count
-            ])
-
-            # Καθαρίζουμε τα samples για το επόμενο διάστημα 20 δευτερολέπτων
-            server_tick_ms_samples.clear()
-            server_metrics_timer = 0.0
 
         # Παύση μέχρι το επόμενο tick
         await asyncio.sleep(TICK_DT)  # 50 FPS, ρυθμός ανανέωσης 20ms

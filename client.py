@@ -9,15 +9,14 @@ import time
 from classView import ClassSelectView
 from login import MenuView
 from playerView import CreatePlayerView
+import client_draw
+import client_attackAndUI
 from sprites import (
     PlayerSprite, EnemySprite, ProjectileSprite,
     load_player_animations, load_enemy_animations,
     load_projectile_animations, get_enemy_type_defs,
     PROJECTILE_ANIMATION_CONFIGS, CLASS_SCALES, ENEMY_SCALES, IDLE, WALK, ATTACK, DEATH, WALK_ATTACK, DOWN, UP, LEFT, RIGHT, ATTACK02, ATTACK03,
 )
-from stats import PerformanceStats
-import client_draw
-import client_attackAndUI
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
@@ -178,11 +177,6 @@ class GameWindow(arcade.Window):
     def on_close(self):
         global CONTROL_ACTIVE       # Χρησιμοποιούμε global flag ώστε το networking thread να καταλάβει ότι το παράθυρο έκλεισε
         CONTROL_ACTIVE = False      # Ο client δεν είναι πλέον ενεργός και θα σταλεί DISCONNECT στον server
-
-        # Αν υπάρχουν ανοιχτά αρχεία μετρήσεων απόδοσης, τα κλείνουμε πριν κλείσει το παράθυρο
-        current_view = getattr(self, "current_view", None)
-        if current_view is not None and hasattr(current_view, "client_stats"):
-            current_view.client_stats.close()
 
         print("Window closed, will send DISCONNECT...")
         super().on_close()          # Κλείσιμο παραθύρου
@@ -449,27 +443,6 @@ class MyGame(arcade.View):
         # Text που εμφανίζονται στο τέλος του παιχνιδιού
         self.game_end_title_text = arcade.Text("", 0, 0, arcade.color.WHITE, font_size=44, anchor_x="center", anchor_y="center")
         self.game_end_subtitle_text = arcade.Text("", 0, 0, arcade.color.LIGHT_GRAY, font_size=18, anchor_x="center", anchor_y="center")
-
-        ### Performance metrics ###
-        self.client_stats = PerformanceStats(           # Αρχείο καταγραφής μετρήσεων απόδοσης του client
-            f"client_metrics_{CLIENT_PLAYER_ID}.csv",
-            [
-                "time_seconds",
-                "avg_fps",
-                "min_fps",
-                "avg_frame_ms",
-                "max_frame_ms",
-                "players",
-                "enemies",
-                "region"
-            ]
-        )
-
-        # Οι μετρήσεις αποθηκεύονται ανά συγκεκριμένο χρονικό διάστημα
-        self.metrics_interval = 20.0
-        self.metrics_timer = 0.0
-        self.fps_samples = []
-        self.frame_ms_samples = []
 
     # Μέθοδος για την κίνηση του παίκτη πίσω από τα walls (έξω από το collision point)
     def sort_key(self, sprite):
@@ -1323,45 +1296,6 @@ class MyGame(arcade.View):
 
             if getattr(projectile, "remove_me", False): # Αν το projectile έχει φτάσει το max_range του, το αφαιρούμε
                 projectile.remove_from_sprite_lists()
-
-        # Καταγραφή μετρήσεων client ανά 20 δευτερόλεπτα
-        if delta_time > 0:
-            fps = 1.0 / delta_time
-            frame_ms = delta_time * 1000.0
-
-            self.fps_samples.append(fps)
-            self.frame_ms_samples.append(frame_ms)
-
-            self.metrics_timer += delta_time
-
-            if self.metrics_timer >= self.metrics_interval:
-                current_time = self.client_stats.elapsed_time()
-
-                avg_fps = sum(self.fps_samples) / len(self.fps_samples)
-                min_fps = min(self.fps_samples)
-
-                avg_frame_ms = sum(self.frame_ms_samples) / len(self.frame_ms_samples)
-                max_frame_ms = max(self.frame_ms_samples)
-
-                players_count = 1 + len(self.other_sprites)
-                enemies_count = len(self.enemy_sprites)
-
-                region = getattr(self, "current_region_name", "unknown")
-
-                self.client_stats.write_row([
-                    round(current_time, 3),
-                    round(avg_fps, 2),
-                    round(min_fps, 2),
-                    round(avg_frame_ms, 2),
-                    round(max_frame_ms, 2),
-                    players_count,
-                    enemies_count,
-                    region
-                ])
-
-                self.fps_samples.clear()
-                self.frame_ms_samples.clear()
-                self.metrics_timer = 0.0
 
         # Ενημερώνουμε την κατάσταση των ability UI texts, όπως Ready, cooldown, Locked ή No Energy
         client_attackAndUI.update_ability_ui_state(self)
