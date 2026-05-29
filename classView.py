@@ -44,6 +44,50 @@ class ClassSelectView(arcade.View):
 
         self.labels = []                     # Λίστα με τα ονόματα των κλάσεων κάτω από τις κάρτες
         self.selected_index = None           # Δείκτης της κλάσης που επιλέχθηκε
+
+        # Κουμπί Join Game
+        self.join_button_width = 170
+        self.join_button_height = 42
+        self.join_button_x = 0
+        self.join_button_y = 0
+        self.join_selected = False
+
+        self.join_text = arcade.Text(
+            "Join Game",
+            0, 0,
+            arcade.color.WHITE,
+            18,
+            anchor_x="center",
+            anchor_y="center"
+        )
+
+        # Βοηθητικά μηνύματα
+        self.hint_text = arcade.Text(
+            "Choose a class, then press Join Game",
+            0, 0,
+            arcade.color.LIGHT_GRAY,
+            14,
+            anchor_x="center"
+        )
+
+        self.escape_hint = arcade.Text(
+            "ESC: Main Menu",
+            0, 0,
+            arcade.color.LIGHT_GRAY,
+            13,
+            anchor_x="center"
+        )
+
+        self.error_text = arcade.Text(
+            "",
+            0, 0,
+            arcade.color.RED,
+            14,
+            anchor_x="center"
+        )
+
+        self.error_timer = 0.0
+        self.error_duration = 2.0
     
     # Καλείται όταν εμφανίζεται το ClassSelectView
     def on_show_view(self):
@@ -54,6 +98,9 @@ class ClassSelectView(arcade.View):
         self.selected_index = None
         self.hover_index = None
         self.particles.clear()
+        self.join_selected = False
+        self.error_text.text = ""
+        self.error_timer = 0.0
 
         # Κέντρο παραθύρου
         self.cx = self.window.width // 2
@@ -121,6 +168,22 @@ class ClassSelectView(arcade.View):
                     "alpha": random.randint(40, 90)
                 })
             self.particles.append(plist)
+
+        # Τοποθέτηση βοηθητικών texts και Join Game button
+        self.hint_text.x = self.cx
+        self.hint_text.y = self.cy - 210
+
+        self.join_button_x = self.cx
+        self.join_button_y = self.cy - 260
+
+        self.join_text.x = self.join_button_x
+        self.join_text.y = self.join_button_y
+
+        self.error_text.x = self.cx
+        self.error_text.y = self.cy - 310
+
+        self.escape_hint.x = self.cx
+        self.escape_hint.y = self.cy - 345
     
     # Ενημερώνει την κίνηση των particles
     def on_update(self, delta_time):
@@ -133,6 +196,12 @@ class ClassSelectView(arcade.View):
                 if p["y"] > self.CARD_HEIGHT:
                     p["y"] = 0
                     p["x"] = random.uniform(0, self.CARD_WIDTH)
+
+        # Αν υπάρχει error message, μειώνουμε τον χρόνο εμφάνισής του
+        if self.error_timer > 0:
+            self.error_timer -= delta_time
+            if self.error_timer <= 0:
+                self.error_text.text = ""
 
     # Σχεδιάζει background, κάρτες, εφέ επιλογής και labels
     def on_draw(self):
@@ -185,6 +254,43 @@ class ClassSelectView(arcade.View):
         for label in self.labels:
             label.draw()
 
+        # Βοηθητικό μήνυμα
+        self.hint_text.draw()
+
+        # Σχεδίαση κουμπιού Join Game
+        button_left = self.join_button_x - self.join_button_width / 2
+        button_bottom = self.join_button_y - self.join_button_height / 2
+
+        button_color = (0, 0, 0, 190)
+        outline_color = arcade.color.YELLOW if self.join_selected else arcade.color.WHITE
+
+        arcade.draw_lbwh_rectangle_filled(
+            button_left,
+            button_bottom,
+            self.join_button_width,
+            self.join_button_height,
+            button_color
+        )
+
+        arcade.draw_lbwh_rectangle_outline(
+            button_left,
+            button_bottom,
+            self.join_button_width,
+            self.join_button_height,
+            outline_color,
+            2
+        )
+
+        # Αν δεν έχει επιλεγεί κλάση, το Join Game φαίνεται πιο αχνό
+        if self.selected_index is None:
+            self.join_text.color = arcade.color.GRAY
+        else:
+            self.join_text.color = arcade.color.YELLOW if self.join_selected else arcade.color.WHITE
+
+        self.join_text.draw()
+        self.error_text.draw()
+        self.escape_hint.draw()
+
     # Σχεδιάζει glow effect γύρω από μία κάρτα
     def draw_glow(self, x, y, w, h, color):
         for i in range(4):
@@ -197,37 +303,88 @@ class ClassSelectView(arcade.View):
                 2
             )
     
+    # Ελέγχει αν ένα σημείο βρίσκεται μέσα στο κουμπί Join Game
+    def point_in_join_button(self, x, y):
+        left = self.join_button_x - self.join_button_width / 2
+        right = self.join_button_x + self.join_button_width / 2
+        bottom = self.join_button_y - self.join_button_height / 2
+        top = self.join_button_y + self.join_button_height / 2
+
+        return left <= x <= right and bottom <= y <= top
+    
+    # Ξεκινά το παιχνίδι αφού έχει επιλεγεί κλάση
+    def join_game(self):
+        if self.selected_index is None:
+            self.error_text.text = "Select a class first"
+            self.error_timer = self.error_duration
+            return
+
+        selected_class = self.classes[self.selected_index]["name"]
+        self.window.class_name = selected_class
+
+        print("Class selected:", self.window.class_name)
+
+        # Αν υπάρχουν ήδη player_id και nickname, αποθηκεύουμε τον παίκτη στη βάση
+        if hasattr(self.window, "player_id") and hasattr(self.window, "nickname"):
+            create_player(
+                player_id=self.window.player_id,
+                nickname=self.window.nickname,
+                class_name=self.window.class_name
+            )
+
+        # Ξεκινάμε το παιχνίδι μέσω της start_game του window
+        start_game = getattr(self.window, "start_game", None)
+        if callable(start_game):
+            start_game()
+    
     # Καλείται όταν ο χρήστης κάνει κλικ με το ποντίκι
     def on_mouse_press(self, x, y, button, modifiers):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        # Αν έγινε κλικ στο Join Game, προσπαθούμε να μπούμε στο παιχνίδι
+        if self.point_in_join_button(x, y):
+            self.join_game()
+            return
+
+        # Αν έγινε κλικ πάνω σε κάρτα, απλώς επιλέγουμε την κλάση
         for i, card in enumerate(self.cards):
-            # Αν το κλικ έγινε πάνω σε κάρτα κλάσης
             if card.collides_with_point((x, y)):
                 self.selected_index = i
-
-                # Αποθηκεύουμε την επιλεγμένη κλάση στο window
-                self.window.class_name = self.classes[i]["name"]
-
-                print("Class selected:", self.window.class_name)
-
-                # Αν υπάρχουν ήδη player_id και nickname, αποθηκεύουμε τον παίκτη στη βάση
-                if hasattr(self.window, "player_id") and hasattr(self.window, "nickname"):
-                    create_player(
-                        player_id=self.window.player_id,
-                        nickname=self.window.nickname,
-                        class_name=self.window.class_name
-                    )
-
-                # Ξεκινάμε το παιχνίδι μέσω της start_game του window
-                start_game = getattr(self.window, "start_game", None)
-                if callable(start_game):
-                    start_game()
+                print("Class selected:", self.classes[i]["name"])
+                return
 
     # Καλείται όταν κινείται το ποντίκι
     def on_mouse_motion(self, x, y, dx, dy):
         self.hover_index = None
+
+        # Έλεγχος hover στο Join Game
+        self.join_selected = self.point_in_join_button(x, y)
 
         # Ελέγχουμε αν το ποντίκι βρίσκεται πάνω σε κάποια κάρτα
         for i, card in enumerate(self.cards):
             if card.collides_with_point((x, y)):
                 self.hover_index = i
                 break
+
+    # Χειρισμός πλήκτρων
+    def on_key_press(self, key, modifiers):
+        if key == arcade.key.ESCAPE:
+            self.clear_pending_player_data()
+
+            from login import MenuView
+            self.window.show_view(MenuView())
+
+        elif key == arcade.key.ENTER:
+            self.join_game()
+
+    # Καθαρίζει τα προσωρινά στοιχεία του νέου παίκτη όταν ακυρωθεί η δημιουργία χαρακτήρα
+    def clear_pending_player_data(self):
+        if hasattr(self.window, "player_id"):
+            del self.window.player_id
+
+        if hasattr(self.window, "nickname"):
+            del self.window.nickname
+
+        if hasattr(self.window, "class_name"):
+            del self.window.class_name

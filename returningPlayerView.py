@@ -61,10 +61,31 @@ class ReturningPlayerView(arcade.View):
             anchor_x="center"
         )
 
-        # Βοηθητικό μήνυμ
+        # Βοηθητικό μήνυμα
         self.hint = arcade.Text(
             "Press ENTER to login",
             0, 0, arcade.color.LIGHT_GRAY, 14,
+            anchor_x="center"
+        )
+
+        # Κουμπί για σύνδεση στο παιχνίδι
+        self.join_button_width = 170
+        self.join_button_height = 38
+        self.join_button_x = 0
+        self.join_button_y = 0
+        self.join_selected = False
+
+        self.join_button_text = arcade.Text(
+            "Join Game",
+            0, 0, arcade.color.WHITE, 16,
+            anchor_x="center",
+            anchor_y="center"
+        )
+
+        # Tip για επιστροφή στο main menu
+        self.escape_hint = arcade.Text(
+            "ESC: Main Menu",
+            0, 0, arcade.color.LIGHT_GRAY, 13,
             anchor_x="center"
         )
 
@@ -104,8 +125,19 @@ class ReturningPlayerView(arcade.View):
         self.hint.x = cx
         self.hint.y = cy - 40
 
+        # Τοποθέτηση κουμπιού Join Game κάτω από το input
+        self.join_button_x = cx
+        self.join_button_y = cy - 85
+
+        self.join_button_text.x = self.join_button_x
+        self.join_button_text.y = self.join_button_y
+
+        # Tip επιστροφής στο main menu
+        self.escape_hint.x = cx
+        self.escape_hint.y = cy - 155
+
         self.error_text.x = cx
-        self.error_text.y = cy - 65
+        self.error_text.y = cy - 130
         self.error_text.text = ""
 
         self.nickname = ""  # Καθαρισμός nickname κάθε φορά που εμφανίζεται το view
@@ -124,6 +156,34 @@ class ReturningPlayerView(arcade.View):
         self.input_text.draw()
 
         self.hint.draw()
+
+        # Σχεδιάζουμε το κουμπί Join Game
+        button_left = self.join_button_x - self.join_button_width / 2
+        button_bottom = self.join_button_y - self.join_button_height / 2
+
+        arcade.draw_lbwh_rectangle_filled(
+            button_left,
+            button_bottom,
+            self.join_button_width,
+            self.join_button_height,
+            (0, 0, 0, 170)
+        )
+
+        # Το περίγραμμα γίνεται κίτρινο όταν το ποντίκι βρίσκεται πάνω στο κουμπί
+        outline_color = arcade.color.YELLOW if self.join_selected else arcade.color.WHITE
+
+        arcade.draw_lbwh_rectangle_outline(
+            button_left,
+            button_bottom,
+            self.join_button_width,
+            self.join_button_height,
+            outline_color,
+            2
+        )
+
+        self.join_button_text.draw()
+        self.escape_hint.draw()
+
         self.error_text.draw()
 
     # Καλείται κάθε frame και ενημερώνει caret και error timer
@@ -139,6 +199,11 @@ class ReturningPlayerView(arcade.View):
             self.error_timer -= delta_time
             if self.error_timer <= 0:
                 self.error_text.text = ""
+        # Αν δεν υπάρχει nickname, το κουμπί φαίνεται ανενεργό
+        if not self.nickname.strip():
+            self.join_button_text.color = arcade.color.GRAY
+        else:
+            self.join_button_text.color = arcade.color.YELLOW if self.join_selected else arcade.color.WHITE
 
     # Καλείται όταν ο χρήστης πληκτρολογεί χαρακτήρες
     def on_text(self, text: str):
@@ -162,8 +227,42 @@ class ReturningPlayerView(arcade.View):
 
         # Επιστροφή στο κεντρικό μενού με Escape
         elif key == arcade.key.ESCAPE:
+            # Καθαρίζουμε τυχόν προσωρινό player id από τη διαδικασία δημιουργίας χαρακτήρα
+            if hasattr(self.window, "player_id"):
+                del self.window.player_id
+
+            # Καθαρίζουμε το προσωρινό nickname
+            if hasattr(self.window, "nickname"):
+                del self.window.nickname
+
+            # Καθαρίζουμε την προσωρινή επιλογή κλάσης
+            if hasattr(self.window, "class_name"):
+                del self.window.class_name
+
+            # Επιστρέφουμε στο main menu
             from login import MenuView
             self.window.show_view(MenuView())
+
+    # Ελέγχει αν ένα σημείο βρίσκεται μέσα στο κουμπί Join Game
+    def point_in_join_button(self, x, y):
+        button_left = self.join_button_x - self.join_button_width / 2
+        button_right = self.join_button_x + self.join_button_width / 2
+        button_bottom = self.join_button_y - self.join_button_height / 2
+        button_top = self.join_button_y + self.join_button_height / 2
+
+        return button_left <= x <= button_right and button_bottom <= y <= button_top
+    
+    # Ενημερώνει αν το ποντίκι βρίσκεται πάνω στο Join Game
+    def on_mouse_motion(self, x, y, dx, dy):
+        self.join_selected = self.point_in_join_button(x, y)
+
+    # Χειρισμός click στο κουμπί Join Game
+    def on_mouse_press(self, x, y, button, modifiers):
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        if self.point_in_join_button(x, y):
+            self.try_login()
 
     # Προσπαθεί να συνδέσει υπάρχοντα παίκτη με βάση το nickname
     def try_login(self):

@@ -2061,7 +2061,7 @@ async def broadcast_state():
         prev_players = {pid: (p["x"], p["y"]) for pid, p in players.items()}
         prev_enemies = {eid: (e["x"], e["y"]) for eid, e in enemies.items()}
 
-        # Ενημέρωση όλων των παικτώνν
+        # Ενημέρωση όλων των παικτών
         for p in players.values():
             # Αν ο παίκτης είναι νεκρός, σταματάει να κινείται
             if p.get("dead", False):
@@ -2209,7 +2209,7 @@ async def broadcast_state():
             # Υπολογίζουμε το objective της περιοχής του παίκτη ώστε ο client να εμφανίσει σωστό objective text progress
             objective_info = get_region_objective_info(p.get("region", START_REGION))
 
-            # Payload του συγκεκριμένου παίκτη που θα σταλεί στους clients
+            # Δεδομένα του συγκεκριμένου παίκτη που θα σταλεί στους clients
             players_payload[pid] = {
                 "x": p["x"],
                 "y": p["y"],
@@ -2241,6 +2241,27 @@ async def broadcast_state():
                 "objective_complete": objective_info["complete"],
             }
 
+        active_regions = get_active_regions()   # Περιοχές όπου υπάρχουν ζωντανοί παίκτες
+        enemies_payload = {}                    # Δεδομένα εχθρών που θα σταλούν στους clients
+
+        for eid, e in enemies.items():
+            if e.get("region") not in active_regions:   # Αγνοούμε enemies από ανενεργές περιοχές
+                continue
+
+            enemies_payload[eid] = {    # Δεδομένα εχθρών που θα σταλούν στους clients
+                "x": e["x"],
+                "y": e["y"],
+                "region": e.get("region", START_REGION),
+                "type": e.get("type", "orc"),
+                "state": e.get("state", "idle"),
+                "dir": e.get("dir", "down"),
+                "hp": e.get("hp", 1.0),
+                "hp_max": e.get("hp_max", 1.0),
+                "dead": e.get("dead", False),
+                "hurt_seq": e.get("hurt_seq", 0),
+                "attack_seq": e.get("attack_seq", 0),
+            }
+
         # Έλεγχος loss, finished πριν σταλεί το state στους client
         check_loss_condition()
         handle_game_finished()
@@ -2250,7 +2271,7 @@ async def broadcast_state():
             "tick": tick,
             "tick_dt": TICK_DT,             # Διάρκεια κάθε "tick"
             "players": players_payload,     # Τρέχουσα κατάσταση παικτών
-            "enemies": dict(enemies),       # Τρέχουσα κατάσταση εχθρών
+            "enemies": enemies_payload,     # Τρέχουσα κατάσταση εχθρών
             "elapsed_time": elapsed_time,   # Χρόνος που έχει περάσει από την έναρξη
             "game_status": game_status,     # Κατάσταση παιχνιδιού
             "session": session.get_public_state(),

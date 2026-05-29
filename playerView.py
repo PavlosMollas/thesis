@@ -19,6 +19,7 @@ def nickname_exists(nickname: str) -> bool:
     conn.close()
     return exists
 
+# View εισαγωγής nickname χαρακτήρα
 class CreatePlayerView(arcade.View):
     def __init__(self):
         super().__init__()
@@ -27,7 +28,7 @@ class CreatePlayerView(arcade.View):
         self.error_timer = 0.0
         self.error_duration = 2.0
 
-        # Text για εμφάνιση error message, π.χ. άδειο ή ήδη χρησιμοποιημένο nickname
+        # Text για εμφάνιση error message
         self.error_text = arcade.Text(
             "",
             0, 0,
@@ -47,6 +48,21 @@ class CreatePlayerView(arcade.View):
 
         # Flag που δείχνει αν ο δείκτης του ποντικιού βρίσκεται πάνω στο Continue
         self.continue_selected = False
+
+        # Κουμπί Continue
+        self.continue_button_width = 170
+        self.continue_button_height = 38
+        self.continue_button_x = 0
+        self.continue_button_y = 0
+
+        self.continue_text = arcade.Text(
+            "Continue",
+            0, 0,
+            arcade.color.WHITE,
+            16,
+            anchor_x="center",
+            anchor_y="center"
+        )
 
         # Nickname που πληκτρολογεί ο χρήστης και id που θα δημιουργηθεί
         self.nickname = ""
@@ -92,6 +108,15 @@ class CreatePlayerView(arcade.View):
             anchor_x="center"
         )
 
+        # Tip για επιστροφή στο main menu
+        self.escape_hint = arcade.Text(
+            "ESC: Main Menu",
+            0, 0,
+            arcade.color.LIGHT_GRAY,
+            13,
+            anchor_x="center"
+        )
+
     # Μέθοδος που καλείται όταν εμφανίζεται το CreatePlayerView
     def on_show_view(self):
         # Δημιουργία και φόρτωση background εικόνας
@@ -112,7 +137,7 @@ class CreatePlayerView(arcade.View):
 
         # Τοποθέτηση των UI texts στην οθόνη
         self.error_text.x = cx
-        self.error_text.y = cy - 65
+        self.error_text.y = cy - 130
         self.error_text.text = ""
 
         self.title.x = cx
@@ -131,9 +156,16 @@ class CreatePlayerView(arcade.View):
         self.nickname = ""
         self.player_id = None
         
-        # Τοποθέτηση Continue επιλογής
-        self.continue_text.x = self.window.width // 2
-        self.continue_text.y = (self.window.height // 2) - 100
+        # Τοποθέτηση κουμπιού Continue
+        self.continue_button_x = cx
+        self.continue_button_y = cy - 85
+
+        self.continue_text.x = self.continue_button_x
+        self.continue_text.y = self.continue_button_y
+
+        # Τοποθέτηση tip επιστροφής στο main menu
+        self.escape_hint.x = cx
+        self.escape_hint.y = cy - 155
 
     # Μέθοδος που σχεδιάζει το background και όλα τα κείμενα του view
     def on_draw(self):
@@ -150,7 +182,32 @@ class CreatePlayerView(arcade.View):
 
         self.error_text.draw()
         self.hint.draw()
+
+        # Σχεδιάζουμε το κουμπί Continue
+        button_left = self.continue_button_x - self.continue_button_width / 2
+        button_bottom = self.continue_button_y - self.continue_button_height / 2
+
+        arcade.draw_lbwh_rectangle_filled(
+            button_left,
+            button_bottom,
+            self.continue_button_width,
+            self.continue_button_height,
+            (0, 0, 0, 170)
+        )
+
+        outline_color = arcade.color.YELLOW if self.continue_selected else arcade.color.WHITE
+
+        arcade.draw_lbwh_rectangle_outline(
+            button_left,
+            button_bottom,
+            self.continue_button_width,
+            self.continue_button_height,
+            outline_color,
+            2
+        )
+
         self.continue_text.draw()
+        self.escape_hint.draw()
 
     # Μέθοδος που καλείται κάθε frame και ενημερώνει caret, hover χρώμα και error timer
     def on_update(self, delta_time: float):
@@ -160,11 +217,11 @@ class CreatePlayerView(arcade.View):
             self.caret_timer = 0
             self.caret_visible = not self.caret_visible
 
-        # Αν το ποντίκι είναι πάνω στο Continue και υπάρχει nickname, το κάνουμε κίτρινο
-        if self.continue_selected and self.nickname.strip():
-            self.continue_text.color = arcade.color.YELLOW
+        # Αν δεν υπάρχει nickname, το κουμπί φαίνεται ανενεργό
+        if not self.nickname.strip():
+            self.continue_text.color = arcade.color.GRAY
         else:
-            self.continue_text.color = arcade.color.WHITE
+            self.continue_text.color = arcade.color.YELLOW if self.continue_selected else arcade.color.WHITE
 
         # Αν υπάρχει error message, μειώνουμε τον χρόνο εμφάνισής του
         if self.error_timer > 0:
@@ -185,13 +242,25 @@ class CreatePlayerView(arcade.View):
 
         return left <= x <= right and bottom <= y <= top
     
+    # Ελέγχει αν ένα σημείο βρίσκεται μέσα στο κουμπί Continue
+    def point_in_continue_button(self, x, y):
+        left = self.continue_button_x - self.continue_button_width / 2
+        right = self.continue_button_x + self.continue_button_width / 2
+        bottom = self.continue_button_y - self.continue_button_height / 2
+        top = self.continue_button_y + self.continue_button_height / 2
+
+        return left <= x <= right and bottom <= y <= top
+
     # Ενημερώνει αν το ποντίκι βρίσκεται πάνω στο Continue
     def on_mouse_motion(self, x, y, dx, dy):
-        self.continue_selected = self.hit_text(self.continue_text, x, y)
+        self.continue_selected = self.point_in_continue_button(x, y)
 
     # Αν γίνει κλικ στο Continue και υπάρχει nickname, γίνεται επιβεβαίωση
     def on_mouse_press(self, x, y, button, modifiers):
-        if self.continue_selected and self.nickname.strip():
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return
+
+        if self.point_in_continue_button(x, y):
             self.confirm_nickname()
 
     # Καλείται όταν ο χρήστης πληκτρολογεί χαρακτήρες
@@ -216,6 +285,19 @@ class CreatePlayerView(arcade.View):
 
         # Επιστροφή στο κεντρικό μενού με Escape
         elif key == arcade.key.ESCAPE:
+            # Καθαρίζουμε τυχόν προσωρινό player id από τη διαδικασία δημιουργίας χαρακτήρα
+            if hasattr(self.window, "player_id"):
+                del self.window.player_id
+
+            # Καθαρίζουμε το προσωρινό nickname
+            if hasattr(self.window, "nickname"):
+                del self.window.nickname
+
+            # Καθαρίζουμε την προσωρινή επιλογή κλάσης
+            if hasattr(self.window, "class_name"):
+                del self.window.class_name
+
+            # Επιστρέφουμε στο main menu
             from login import MenuView
             self.window.show_view(MenuView())
 
