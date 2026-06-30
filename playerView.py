@@ -2,10 +2,11 @@ import arcade
 import uuid
 import sqlite3
 from classView import ClassSelectView
+from db_path import get_db_path
 
 # Μέθοδος που ελέγχει αν υπάρχει ήδη το nickname στη βάση δεδομένων
 def nickname_exists(nickname: str) -> bool:
-    conn = sqlite3.connect("MMORPG_DB.db")
+    conn = sqlite3.connect(get_db_path())
     cur = conn.cursor()
 
     # Ψάχνουμε στον πίνακα Player αν υπάρχει ήδη εγγραφή με το ίδιο nickname

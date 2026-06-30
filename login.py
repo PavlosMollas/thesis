@@ -78,17 +78,20 @@ class MenuView(arcade.View):
         self.background.width = self.window.width
         self.background.height = self.window.height
 
-        # Αν παίζει ήδη, σταμάτα το
-        if self.menu_music_player:
-            arcade.stop_sound(self.menu_music_player)
+        # Παίζουμε main menu music μόνο αν δεν παίζει ήδη
+        if not hasattr(self.window, "menu_music_player"):
+            self.window.menu_music_player = None
 
-        # Παίζει η μουσική και κρατάμε τον music player σε μεταβλητή
-        self.menu_music_player = arcade.play_sound(
-            self.menu_music,
-            volume=0.2,
-        )
+        if self.window.menu_music_player is None:
+            self.window.menu_music_player = arcade.play_sound(
+                self.menu_music,
+                volume=0.2,
+            )
 
-        self.menu_music_player.loop = True  # Η μουσική συνεχίζει από την αρχή όταν τελειώσει το κομμάτι
+            self.window.menu_music_player.loop = True
+
+        # Κρατάμε και τοπικό reference για το toggle_sound
+        self.menu_music_player = self.window.menu_music_player
 
         # Μεταβλητές για να πάρουμε το κέντρο του παραθύρου
         cx = self.window.width // 2
@@ -208,8 +211,8 @@ class MenuView(arcade.View):
         self.sound_on_icon.visible = self.sound_enabled
         self.sound_off_icon.visible = not self.sound_enabled
 
-        if self.menu_music_player:
-            self.menu_music_player.volume = 0.2 if self.sound_enabled else 0.0
+        if hasattr(self.window, "menu_music_player") and self.window.menu_music_player:
+            self.window.menu_music_player.volume = 0.2 if self.sound_enabled else 0.0
 
     # Επιβεβαίωση της επιλογής και εκτέλεση του επόμενου action
     def confirm(self):
@@ -219,11 +222,19 @@ class MenuView(arcade.View):
         # Προσπαθεί να βρει στο window μια μέθοδο start_game (αν δεν υπάρχει, παίρνει None)
         start_game = getattr(self.window, "start_game", None)
 
-        if self.menu_music_player:
-            arcade.stop_sound(self.menu_music_player)
-            self.menu_music_player = None
-
         if self.window.game_mode == "NEW_GAME":
+            start_game = getattr(self.window, "start_game", None)
+
+            # Καθαρίζουμε παλιά στοιχεία παίκτη
+            if hasattr(self.window, "player_id"):
+                del self.window.player_id
+
+            if hasattr(self.window, "nickname"):
+                del self.window.nickname
+
+            if hasattr(self.window, "class_name"):
+                del self.window.class_name
+
             start_game = getattr(self.window, "start_game", None)
 
             # Αν υπάρχει και είναι callable, ξεκινά το παιχνίδι

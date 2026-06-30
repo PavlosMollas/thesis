@@ -8,8 +8,12 @@ from stats import (XP_REQUIREMENTS, is_dragon_type, is_dragon_damageable_state, 
 from dragon_enemy import (update_dragon, find_nearest_player_in_region, player_is_behind_dragon, direction_from_dragon_to_player)
 import math
 from region import Region
-from db_game import get_player_inventory, get_player_by_id, update_player_progress, update_last_login, buy_item_for_player, consume_item_for_player, reset_player_progress
+from db_game import (get_player_inventory, get_player_by_id, update_player_progress, update_last_login, buy_item_for_player, consume_item_for_player, reset_player_progress,
+                    ensure_classes_exist, ensure_items_exist, add_item_to_player, can_player_receive_item, player_has_item)
 from game_session import GameSessionManager
+from dataBase import initialize_database
+import socket
+import random
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
@@ -90,6 +94,30 @@ players = {}          # Λεξικό με όλα τα δεδομένα των σ
 enemies = {}          # Λεξικό με όλα τα δεδομένα των εχθρών του παιχνιδιού
 
 connected = set()     # Σύνολο με τους συνδεδεμένους παίκτες
+
+# Περιοχές στις οποίες έχει ήδη ενεργοποιηθεί checkpoint revive
+# Χρησιμοποιείται ώστε το revive να μη γίνεται συνέχεια σε κάθε tick
+checkpoint_revived_regions = set()
+
+# Περιοχές που έχουν ήδη δώσει mission reward, ώστε να μη δοθεί πολλές φορές
+mission_rewarded_regions = set()
+
+# Gold reward ανά περιοχή
+MISSION_GOLD_REWARDS = {
+    "firstRegion": 100,
+    "secondRegion": 200,
+    "thirdRegion": 300,
+    "fourthRegion": 400,
+}
+
+# Πιθανότητες reward item
+MISSION_ITEM_REWARDS = [
+    ("Health_Potion", 30),
+    ("Energy_Potion", 25),
+    ("ElixirOfToughness", 15),
+    ("ElixirOfMagic", 15),
+    ("ElixirOfPower", 15),
+]
 
 next_spawn_index = 0  # Δείκτης για κυκλική επιλογή spawn point όταν συνδέονται νέοι παίκτες
 
@@ -220,6 +248,243 @@ def get_region_objective_info(region_name):
         "remaining": 0,
         "complete": True,
     }
+
+# Επιστρέφει τους active παίκτες του τρέχοντος session
+def get_active_session_players():
+    active_players = []
+
+    for pid, p in players.items():
+        if session.is_active_player(pid):
+            active_players.append((pid, p))
+
+    return active_players
+
+
+# Κάνει revive έναν νεκρό παίκτη σε checkpoint θέσης
+def revive_player_at_checkpoint(pid, player, region_name, checkpoint_x, checkpoint_y, offset_index=0):
+    hp_max = player.get("hp_max", 100)
+
+    # Μικρό offset ώστε να μη γεννηθούν όλοι ακριβώς στο ίδιο pixel
+    offset_x = offset_index * 28
+
+    # Θέση revive
+    player["region"] = region_name
+    player["x"] = checkpoint_x + offset_x
+    player["y"] = checkpoint_y
+
+    # Επαναφορά ζωής / resources
+    player["dead"] = False
+    player["hp_cur"] = hp_max
+    player["hp"] = 1.0
+    player["energy"] = 1.0
+
+    # Καθαρισμός κατάστασης κίνησης και επίθεσης
+    player["state"] = "idle"
+    player["move_dir"] = "STOP"
+    player["attack_requested"] = False
+    player["pending_hit_time"] = 0.0
+    player["attack_anim_until"] = 0.0
+    player["attack_state"] = "attack"
+    player["attack_dir"] = player.get("dir", "down")
+
+    # Καθαρισμός προσωρινών attack/buff timing που μπορεί να έχουν μείνει
+    player["rapid_fire_until"] = 0.0
+
+    print(f"Checkpoint revive: {player.get('nickname', pid)} revived in {region_name}")
+
+
+# Ελέγχει αν ολοκληρώθηκε objective περιοχής και κάνει revive νεκρούς συμπαίκτες
+def check_objective_checkpoint_revive():
+    if game_status != "playing":
+        return
+
+    active_players = get_active_session_players()
+
+    # Το checkpoint revive έχει νόημα μόνο σε multiplayer.
+    if len(active_players) <= 1:
+        return
+
+    for region_name in ("firstRegion", "secondRegion", "thirdRegion", "fourthRegion"):
+
+        # Αν έχει ήδη γίνει checkpoint revive για αυτή την περιοχή, δεν ξαναγίνεται
+        if region_name in checkpoint_revived_regions:
+            continue
+
+        objective_info = get_region_objective_info(region_name)
+
+        # Αν η περιοχή δεν έχει objective ή δεν έχει ολοκληρωθεί ακόμα, συνεχίζουμε
+        if not objective_info.get("text"):
+            continue
+
+        if not objective_info.get("complete", False):
+            continue
+
+        # Βρίσκουμε ζωντανούς active παίκτες στην περιοχή που ολοκληρώθηκε
+        alive_players_in_region = []
+
+        for pid, p in active_players:
+            if p.get("region") != region_name:
+                continue
+
+            if p.get("dead", False):
+                continue
+
+            alive_players_in_region.append((pid, p))
+
+        # Αν δεν υπάρχει τουλάχιστον ένας ζωντανός παίκτης στην περιοχή, δεν ενεργοποιείται checkpoint
+        if not alive_players_in_region:
+            continue
+
+        # Από τον πρώτο ζωντανό παίκτη παίρνουμε τη θέση checkpoint
+        checkpoint_pid, checkpoint_player = alive_players_in_region[0]
+        checkpoint_x = checkpoint_player["x"]
+        checkpoint_y = checkpoint_player["y"]
+
+        # Βρίσκουμε τους νεκρούς active παίκτες της ίδιας περιοχής
+        dead_players_in_region = []
+
+        for pid, p in active_players:
+            if p.get("region") != region_name:
+                continue
+
+            if not p.get("dead", False):
+                continue
+
+            dead_players_in_region.append((pid, p))
+
+        # Από τη στιγμή που το objective ολοκληρώθηκε με ζωντανό παίκτη, θεωρούμε ότι το checkpoint της περιοχής ενεργοποιήθηκε
+        checkpoint_revived_regions.add(region_name)
+
+        # Αν δεν υπάρχει νεκρός παίκτης, απλώς αποθηκεύουμε ότι το checkpoint ενεργοποιήθηκε
+        if not dead_players_in_region:
+            print(f"Checkpoint activated in {region_name}, no dead players to revive.")
+            continue
+
+        # Κάνουμε revive όλους τους νεκρούς παίκτες κοντά στον ζωντανό παίκτη
+        for index, (pid, p) in enumerate(dead_players_in_region):
+            revive_player_at_checkpoint(
+                pid,
+                p,
+                region_name,
+                checkpoint_x,
+                checkpoint_y,
+                index
+            )
+
+# Επιλέγει reward item για συγκεκριμένο παίκτη, αν έχει ήδη φτάσει το max stack, αφαιρείται από τις πιθανές επιλογές
+def choose_mission_reward_item_for_player(player_id):
+    available_rewards = []
+
+    # Κρατάμε μόνο τα items που ο παίκτης μπορεί να πάρει
+    for item_name, chance in MISSION_ITEM_REWARDS:
+        if can_player_receive_item(player_id, item_name):
+            available_rewards.append((item_name, chance))
+
+    # Αν όλα τα reward items είναι full stack, δεν δίνεται item
+    if not available_rewards:
+        return None
+
+    # Υπολογίζουμε το συνολικό βάρος μόνο των διαθέσιμων items
+    total_chance = sum(chance for item_name, chance in available_rewards)
+
+    # Κάνουμε roll με βάση το νέο σύνολο πιθανοτήτων
+    roll = random.uniform(0, total_chance)
+    current = 0
+
+    for item_name, chance in available_rewards:
+        current += chance
+
+        if roll <= current:
+            return item_name
+
+    # Fallback
+    return available_rewards[-1][0]
+
+
+# Δίνει reward σε έναν παίκτη για ολοκλήρωση mission περιοχής
+def give_mission_reward_to_player(pid, player, region_name):
+    gold_reward = MISSION_GOLD_REWARDS.get(region_name, 100)
+
+    db_player_id = player.get("player_id", pid)
+
+    # Επιλέγουμε item που μπορεί όντως να μπει στο inventory
+    reward_item = choose_mission_reward_item_for_player(db_player_id)
+
+    # Προσθήκη gold στο runtime state του παίκτη
+    player["gold"] = int(player.get("gold", 0)) + gold_reward
+
+    try:
+        # Αποθήκευση gold στη βάση
+        update_player_progress(
+            db_player_id,
+            int(player.get("gold", 0)),
+            int(player.get("xp", 0)),
+            int(player.get("level", 1))
+        )
+
+        # Αν υπάρχει διαθέσιμο item, το προσθέτουμε στο inventory
+        if reward_item is not None:
+            success, reason = add_item_to_player(db_player_id, reward_item, 1)
+
+            if not success:
+                print(f"Mission item reward failed for {db_player_id}: {reason}")
+
+        else:
+            print(f"Mission reward: {db_player_id} got only gold because all reward items are full stack")
+
+        # Ξαναφορτώνουμε το inventory από τη βάση, ώστε ο client να δει το νέο item
+        player["inventory"] = load_player_inventory_payload(db_player_id)
+
+        print(
+            f"Mission reward: {player.get('nickname', pid)} got "
+            f"{gold_reward} gold and {reward_item} for {region_name}"
+        )
+
+    except Exception as ex:
+        print("Error giving mission reward:", ex)
+
+
+# Ελέγχει αν ολοκληρώθηκε objective περιοχής και δίνει rewards μία φορά
+def check_mission_rewards():
+    for region_name in MISSION_GOLD_REWARDS.keys():
+
+        # Αν η περιοχή έχει ήδη δώσει reward, δεν ξαναδίνει
+        if region_name in mission_rewarded_regions:
+            continue
+
+        objective_info = get_region_objective_info(region_name)
+
+        # Αν η περιοχή δεν έχει objective ή δεν ολοκληρώθηκε, δεν δίνουμε reward
+        if not objective_info.get("text"):
+            continue
+
+        if not objective_info.get("complete", False):
+            continue
+
+        # Παίκτες που είναι ζωντανοί και βρίσκονται στην περιοχή όταν ολοκληρώθηκε το mission
+        players_to_reward = []
+
+        for pid, p in players.items():
+            if p.get("region") != region_name:
+                continue
+
+            if p.get("dead", False):
+                continue
+
+            if not session.is_active_player(pid):
+                continue
+
+            players_to_reward.append((pid, p))
+
+        # Αν δεν υπάρχει παίκτης στην περιοχή, δεν σημειώνουμε ακόμα ότι δόθηκε reward
+        if not players_to_reward:
+            continue
+
+        # Σημειώνουμε ότι η περιοχή έδωσε reward, ώστε να μη γίνει ξανά κάθε tick
+        mission_rewarded_regions.add(region_name)
+
+        for pid, p in players_to_reward:
+            give_mission_reward_to_player(pid, p, region_name)
 
 # Ελέγχει αν ο παίκτης βρίσκεται μέσα σε κάποιο transition object και τον μεταφέρει στο αντίστοιχο region
 def player_transition(player):
@@ -1091,6 +1356,9 @@ def reset_runtime_game_state():
     server_start_time = time.time()
     tick = 0
 
+    checkpoint_revived_regions.clear()
+    mission_rewarded_regions.clear()
+
     reset_enemies()     # Επαναφορά όλων των εχθρών στις αρχικές τους θέσεις και τιμές
 
     print("Runtime game state reset. New session started.")
@@ -1921,6 +2189,25 @@ async def handle_inputs():
 
             p = players[pid]
 
+            # Πρώτα ελέγχουμε αν ο παίκτης έχει όντως το item στο inventory
+            # Αν δεν το έχει, δεν εφαρμόζεται κανένα effect
+            if not player_has_item(pid, item_name):
+                print(f"Use item failed for {pid}: item not in inventory")
+
+                # Ξαναφορτώνουμε inventory για σιγουριά, ώστε ο client να είναι συγχρονισμένος
+                players[pid]["inventory"] = load_player_inventory_payload(pid)
+                continue
+
+            # Κρατάμε παλιές τιμές, ώστε αν κάτι πάει στραβά στο consume,
+            # να μπορούμε να αναιρέσουμε το effect.
+            old_hp_cur = p.get("hp_cur")
+            old_hp = p.get("hp")
+            old_energy = p.get("energy")
+            old_damage = p.get("damage")
+            old_resist = p.get("resist")
+            old_attack_speed_multiplier = p.get("item_attack_speed_multiplier")
+            old_buffs = dict(p.get("item_buffs", {}))
+
             # Εφαρμόζουμε το effect, αν δεν μπορεί να εφαρμοστεί δεν καταναλώνουμε το item
             effect_ok, effect_reason = apply_item_effect(p, item_name)
 
@@ -1933,10 +2220,16 @@ async def handle_inputs():
             if not consumed:
                 print(f"Consume failed for {pid}: {reason}")
 
-                # Αν απέτυχε το consume, αφαιρούμε το elixir buff ώστε να μη μείνει δωρεάν effect
-                if item_name.startswith("Elixir"):
-                    remove_item_buff(p, item_name)
+                # Αν για κάποιο λόγο απέτυχε το consume, κάνουμε rollback στο runtime effect
+                p["hp_cur"] = old_hp_cur
+                p["hp"] = old_hp
+                p["energy"] = old_energy
+                p["damage"] = old_damage
+                p["resist"] = old_resist
+                p["item_attack_speed_multiplier"] = old_attack_speed_multiplier
+                p["item_buffs"] = old_buffs
 
+                players[pid]["inventory"] = load_player_inventory_payload(pid)
                 continue
 
             # Ξαναφορτώνουμε inventory από τη βάση μετά την κατανάλωση
@@ -2045,6 +2338,8 @@ async def broadcast_state():
         # Αποθήκευση προηγούμενων θέσεων παικτών και εχθρών, ώστε να μπορούν να χρησιμοποιηθούν σε collision correction
         prev_players = {pid: (p["x"], p["y"]) for pid, p in players.items()}
         prev_enemies = {eid: (e["x"], e["y"]) for eid, e in enemies.items()}
+
+        check_objective_checkpoint_revive() # Ελέγχουμε αν κάποιο objective ολοκληρώθηκε και κάνουμε revive τους νεκρούς συμπαίκτες
 
         # Ενημέρωση όλων των παικτών
         for p in players.values():
@@ -2169,6 +2464,8 @@ async def broadcast_state():
 
         handle_game_finished()  # Αν το παιχνίδι έχει τελειώσει, χειριζόμαστε το reset προόδου μία φορά
 
+        check_mission_rewards() # Έλεγχος για επιβραβεύσεις
+
         players_payload = {}    # Δημιουργούμε καθαρό payload παικτών για αποστολή στους clients
 
         for pid, p in players.items():
@@ -2273,8 +2570,44 @@ async def broadcast_state():
         # Παύση μέχρι το επόμενο tick
         await asyncio.sleep(TICK_DT)  # 50 FPS, ρυθμός ανανέωσης 20ms
 
+# Παίρνει το τοπικό IP του υπολογιστή που τρέχει τον server
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+# Εμφανίζει πληροφορίες σύνδεσης όταν ξεκινά ο server
+def show_server_startup_info():
+    local_ip = get_local_ip()
+
+    print("===================================")
+    print(" Celestial Lands Server")
+    print("===================================")
+    print("Local play:")
+    print("  Use server_ip.txt = 127.0.0.1")
+    print()
+    print("LAN multiplayer:")
+    print(f"  Detected server LAN IP: {local_ip}")
+    print("  Other clients should put this IP in server_ip.txt")
+    print()
+    print("Server ports:")
+    print("  5555, 5556, 5557")
+    print("===================================")
+
 # Main ασύγχρονη μέθοδος του server
 async def main():
+    show_server_startup_info()
+
+    # Εξασφαλίζουμε ότι η βάση, οι κλάσεις και τα items υπάρχουν πριν ξεκινήσει το παιχνίδι
+    initialize_database()
+    ensure_classes_exist()
+    ensure_items_exist()
+
     await asyncio.gather(
         handle_control(),       # Επεξεργασία αιτημάτων σύνδεσης/αποσύνδεσης
         handle_inputs(),        # Επεξεργασία των κινήσεων των παικτών

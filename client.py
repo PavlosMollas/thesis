@@ -17,6 +17,8 @@ from sprites import (
     load_projectile_animations, get_enemy_type_defs,
     PROJECTILE_ANIMATION_CONFIGS, CLASS_SCALES, ENEMY_SCALES, IDLE, WALK, ATTACK, DEATH, WALK_ATTACK, DOWN, UP, LEFT, RIGHT, ATTACK02, ATTACK03,
 )
+import os
+import random
 
 # Windows fix για να λειτουργεί το asyncio με τον κατάλληλο event loop σε Windows
 if sys.platform.startswith("win"):
@@ -51,21 +53,49 @@ CONTROL_ACTIVE = True         # γίνeται False όταν κλείσει το
 DISCONNECT_SENT = False       # γίνεται True όταν σταλεί DISCONNECT στον server
 DISCONNECT_REQUESTED = False
 
+# Επιστρέφει τον φάκελο από όπου τρέχει ο client
+# Αν τρέχει ως exe, χρησιμοποιεί τον φάκελο του exe
+# Αν τρέχει ως .py, χρησιμοποιεί τον φάκελο του αρχείου client.py
+def get_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+
+    return os.path.dirname(os.path.abspath(__file__))
+
+# Φορτώνει την IP του server από το server_ip.txt
+# Αν δεν υπάρχει το αρχείο ή είναι κενό, χρησιμοποιείται το 127.0.0.1 για local play
+def load_server_ip():
+    ip_file = os.path.join(get_base_dir(), "server_ip.txt")
+
+    try:
+        with open(ip_file, "r", encoding="utf-8") as f:
+            ip = f.read().strip()
+
+            if ip:
+                return ip
+    except FileNotFoundError:
+        pass
+
+    return "127.0.0.1"
+
+SERVER_IP = load_server_ip()
+print("Connecting to server IP:", SERVER_IP)
+
 # ZeroMQ context που χρησιμοποιείται για τη δημιουργία όλων των sockets του client
 ctx = zmq.asyncio.Context()
 
 # PUSH socket: στέλνει inputs του παίκτη προς τον server, όπως κίνηση, attack και χρήση item
 push_socket = ctx.socket(zmq.PUSH)
-push_socket.connect("tcp://127.0.0.1:5555")
+push_socket.connect(f"tcp://{SERVER_IP}:5555")
 
 # SUB socket: λαμβάνει συνεχώς το game state που δημοσιεύει ο server
 sub_socket = ctx.socket(zmq.SUB)
-sub_socket.connect("tcp://127.0.0.1:5556")
+sub_socket.connect(f"tcp://{SERVER_IP}:5556")
 sub_socket.setsockopt_string(zmq.SUBSCRIBE, "")
 
 # CONTROL SOCKET: χρησιμοποιείται για control μηνύματα, όπως connect και disconnect
 control_socket = ctx.socket(zmq.REQ)
-control_socket.connect("tcp://127.0.0.1:5557")
+control_socket.connect(f"tcp://{SERVER_IP}:5557")
 
 ### Ασύγχρονες μέθοδοι για το δίκτυο ###
 
@@ -202,6 +232,11 @@ class ConnectingView(arcade.View):
         self.msg = arcade.Text("Connecting to server...", 0, 0, arcade.color.WHITE, 20, anchor_x="center")
 
     def on_show_view(self):
+        # Όταν ο παίκτης μπαίνει στο παιχνίδι, σταματάμε τη μουσική του main menu
+        if hasattr(self.window, "menu_music_player") and self.window.menu_music_player is not None:
+            arcade.stop_sound(self.window.menu_music_player)
+            self.window.menu_music_player = None
+
         arcade.set_background_color(arcade.color.BLACK) # Ορίζουμε μαύρο φόντο
 
         # Κεντράρουμε το μήνυμα σύνδεσης στο παράθυρο
@@ -241,7 +276,7 @@ class MyGame(arcade.View):
         super().__init__()
 
         self.player_animation_dict = {}     # Dictionary που κρατάει τα animations κάθε κλάσης ώστε να μη φορτώνονται ξανά από τον δίσκο
-        self.heartbeat_timer = 0.0  # Timer για heartbeat προς τον server #
+        self.heartbeat_timer = 0.0          # Timer για heartbeat προς τον server #
 
         ### Input state ###
         self.held_keys = set()     # Set που κρατάει ποια πλήκτρα είναι πατημένα (για hold keys)
@@ -443,6 +478,395 @@ class MyGame(arcade.View):
         # Text που εμφανίζονται στο τέλος του παιχνιδιού
         self.game_end_title_text = arcade.Text("", 0, 0, arcade.color.WHITE, font_size=44, anchor_x="center", anchor_y="center")
         self.game_end_subtitle_text = arcade.Text("", 0, 0, arcade.color.LIGHT_GRAY, font_size=18, anchor_x="center", anchor_y="center")
+
+        ### Sound effects ###
+        self.sounds = {
+            "gold_gain": arcade.load_sound("assets/sounds/goldGain.ogg"),
+            "item_buy": arcade.load_sound("assets/sounds/itemBuy.wav"),
+            "potion_use": arcade.load_sound("assets/sounds/potionUse.mp3"),
+            "level_up": arcade.load_sound("assets/sounds/levelUp.ogg"),
+
+            "warrior_basic": arcade.load_sound("assets/sounds/swordBasic.mp3"),
+            "warrior_q": arcade.load_sound("assets/sounds/swordQ.mp3"),
+            "warrior_e": arcade.load_sound("assets/sounds/swordE.mp3"),
+
+            "mage_basic": arcade.load_sound("assets/sounds/mageBasic.ogg"),
+            "mage_q": arcade.load_sound("assets/sounds/mageQ.ogg"),
+            "mage_e": arcade.load_sound("assets/sounds/mageE.ogg"),
+
+            "marksman_basic": arcade.load_sound("assets/sounds/gunShot.mp3"),
+            "marksman_q": arcade.load_sound("assets/sounds/gunQ.ogg"),
+            "marksman_e": arcade.load_sound("assets/sounds/gunE.ogg"),
+
+            "victory": arcade.load_sound("assets/sounds/Victory.ogg"),
+            "defeat": arcade.load_sound("assets/sounds/Defeat.mp3"),
+
+            "warrior_entry": arcade.load_sound("assets/sounds/Character/warriorEntry.wav"),
+            "warrior_hurt_1": arcade.load_sound("assets/sounds/Character/warriorHurt1.wav"),
+            "warrior_hurt_2": arcade.load_sound("assets/sounds/Character/warriorHurt2.wav"),
+            "warrior_hurt_3": arcade.load_sound("assets/sounds/Character/warriorHurt3.wav"),
+            "warrior_death_1": arcade.load_sound("assets/sounds/Character/warriorDeath1.wav"),
+            "warrior_death_2": arcade.load_sound("assets/sounds/Character/warriorDeath2.wav"),
+            "warrior_death_3": arcade.load_sound("assets/sounds/Character/warriorDeath3.wav"),
+            "warrior_moving_1": arcade.load_sound("assets/sounds/Character/warriorMoving1.wav"),
+            "warrior_moving_2": arcade.load_sound("assets/sounds/Character/warriorMoving2.wav"),
+            "warrior_moving_3": arcade.load_sound("assets/sounds/Character/warriorMoving3.wav"),
+            "warrior_buy_failed": arcade.load_sound("assets/sounds/Character/warriorItemBuyFailed.wav"),
+            "warrior_use_failed": arcade.load_sound("assets/sounds/Character/warriorItemUseFailed.wav"),
+
+            "mage_entry": arcade.load_sound("assets/sounds/Character/mageEntry.wav"),
+            "mage_hurt_1": arcade.load_sound("assets/sounds/Character/mageHurt1.wav"),
+            "mage_hurt_2": arcade.load_sound("assets/sounds/Character/mageHurt2.wav"),
+            "mage_hurt_3": arcade.load_sound("assets/sounds/Character/mageHurt3.wav"),
+            "mage_death_1": arcade.load_sound("assets/sounds/Character/mageDeath1.wav"),
+            "mage_death_2": arcade.load_sound("assets/sounds/Character/mageDeath2.wav"),
+            "mage_death_3": arcade.load_sound("assets/sounds/Character/mageDeath3.wav"),
+            "mage_moving_1": arcade.load_sound("assets/sounds/Character/mageMoving1.wav"),
+            "mage_moving_2": arcade.load_sound("assets/sounds/Character/mageMoving2.wav"),
+            "mage_moving_3": arcade.load_sound("assets/sounds/Character/mageMoving3.wav"),
+            "mage_buy_failed": arcade.load_sound("assets/sounds/Character/mageItemBuyFailed.wav"),
+            "mage_use_failed": arcade.load_sound("assets/sounds/Character/mageItemUseFailed.wav"),
+
+            "marksman_entry": arcade.load_sound("assets/sounds/Character/marksmanEntry.wav"),
+            "marksman_hurt_1": arcade.load_sound("assets/sounds/Character/marksmanHurt1.wav"),
+            "marksman_hurt_2": arcade.load_sound("assets/sounds/Character/marksmanHurt2.wav"),
+            "marksman_hurt_3": arcade.load_sound("assets/sounds/Character/marksmanHurt3.wav"),
+            "marksman_death_1": arcade.load_sound("assets/sounds/Character/marksmanDeath1.wav"),
+            "marksman_death_2": arcade.load_sound("assets/sounds/Character/marksmanDeath2.wav"),
+            "marksman_death_3": arcade.load_sound("assets/sounds/Character/marksmanDeath3.wav"),
+            "marksman_moving_1": arcade.load_sound("assets/sounds/Character/marksmanMoving1.wav"),
+            "marksman_moving_2": arcade.load_sound("assets/sounds/Character/marksmanMoving2.wav"),
+            "marksman_moving_3": arcade.load_sound("assets/sounds/Character/marksmanMoving3.wav"),
+            "marksman_buy_failed": arcade.load_sound("assets/sounds/Character/marksmanItemBuyFailed.wav"),
+            "marksman_use_failed": arcade.load_sound("assets/sounds/Character/marksmanItemUseFailed.wav"),
+        }
+
+        self.last_gold_for_sound = None
+        self.last_level_for_sound = None
+        self.game_end_sound_played = False
+        self.defeat_sound_played = False
+
+        # Character voice flags
+        self.character_entry_played = False
+        self.character_move_voice_timer = 0.0
+        self.character_move_voice_interval = 4.0
+        self.character_move_voice_index = 0
+        self.local_death_voice_played = False
+
+        ### Music ###
+        self.music_tracks = {
+            "firstRegion": "assets/music/firstRegionMusic.ogg",
+            "secondRegion": "assets/music/secondRegionMusic.ogg",
+            "thirdRegion": "assets/music/thirdRegionMusic.ogg",
+            "fourthRegion": "assets/music/fourthRegionMusic.ogg",
+
+            "five_remaining": "assets/music/5remaining.ogg",
+            "objective_finish": "assets/music/objectiveFinish.wav",
+            "player_dead": "assets/music/playerDeadMusic.mp3",
+
+            "dragon_trigger": "assets/music/dragonTrigger.wav",
+        }
+
+        # Τρέχουσα μουσική που παίζει
+        self.current_music_key = None
+        self.current_music_player = None
+        self.dragon_active_in_region = False
+
+    # Παίζει ηχητικό εφέ 
+    def play_sfx(self, sound_name, volume=0.5):
+        sound = self.sounds.get(sound_name) # Αναζητούμε το sound object από το dictionary των φορτωμένων ήχων
+
+        if sound is None:   # Αν δεν βρεθεί ήχος με αυτό το όνομα, δεν κάνουμε τίποτα
+            return
+
+        try:
+            arcade.play_sound(sound, volume=volume) # Αναπαραγωγή του ήχου με την ένταση που δίνεται ως παράμετρος
+        except Exception as ex:
+            print(f"Could not play sound {sound_name}:", ex)    # Αν υπάρξει πρόβλημα στην αναπαραγωγή, εμφανίζεται μήνυμα στο console
+
+    # Παίζει τον κατάλληλο ήχο επίθεσης ανάλογα με την κλάση του παίκτη και το είδος της επίθεσης
+    def play_attack_sound(self, attack_id):
+        class_name = getattr(self.window, "class_name", "") # Παίρνουμε την κλάση που έχει επιλέξει ο παίκτης από το window
+
+        # Αντιστοίχιση κάθε κλάσης και κάθε επίθεσης με το αντίστοιχο sound key
+        attack_sounds = {
+            "Warrior": {
+                "basic": "warrior_basic",
+                "skill1": "warrior_q",
+                "skill2": "warrior_e",
+            },
+            "Mage": {
+                "basic": "mage_basic",
+                "skill1": "mage_q",
+                "skill2": "mage_e",
+            },
+            "Marksman": {
+                "basic": "marksman_basic",
+                "skill1": "marksman_q",
+                "skill2": "marksman_e",
+            },
+        }
+
+        sound_name = attack_sounds.get(class_name, {}).get(attack_id)   # Βρίσκουμε ποιο sound key αντιστοιχεί στην κλάση και στο attack_id
+
+        # Αν υπάρχει αντίστοιχος ήχος, τον αναπαράγουμε
+        if sound_name:
+            self.play_sfx(sound_name, volume=0.45)
+
+    # Επιστρέφει την ποσότητα ενός item που υπάρχει στο inventory του παίκτη
+    def inventory_quantity(self, item_name):
+        for item in self.inventory:     # Διατρέχουμε όλα τα items του inventory
+            if isinstance(item, dict):  # Ελέγχουμε ότι το item είναι dictionary, όπως έρχεται από το server state
+                if item.get("item_name") == item_name:  # Αν το όνομα του item ταιριάζει με αυτό που ψάχνουμε
+                    return int(item.get("quantity", 0)) # Επιστρέφουμε την ποσότητα του item
+
+        return 0    # Αν δεν βρεθεί το item στο inventory, επιστρέφουμε 0
+
+    # Ελέγχει τοπικά αν μπορεί να γίνει αγορά item
+    def can_buy_item_locally(self, item_name):
+        item_prices = {
+            "Health_Potion": 50,
+            "Energy_Potion": 50,
+            "ElixirOfToughness": 200,
+            "ElixirOfMagic": 200,
+            "ElixirOfPower": 200,
+        }
+
+        item_max_stacks = {
+            "Health_Potion": 2,
+            "Energy_Potion": 2,
+            "ElixirOfToughness": 1,
+            "ElixirOfMagic": 1,
+            "ElixirOfPower": 1,
+        }
+
+        price = item_prices.get(item_name, 0)
+        max_stack = item_max_stacks.get(item_name, 1)
+
+        # Αν δεν έχει αρκετό gold, δεν παίζουμε ήχο αγοράς
+        if self.gold < price:
+            return False
+
+        # Αν το item έχει ήδη φτάσει max stack, δεν παίζουμε ήχο αγοράς
+        if self.inventory_quantity(item_name) >= max_stack:
+            return False
+
+        return True
+    
+    # Ελέγχει τοπικά αν έχει νόημα να χρησιμοποιηθεί ένα item
+    def can_use_item_locally(self, item_name):
+        # Πρώτα ελέγχουμε αν υπάρχει το item στο inventory
+        if self.inventory_quantity(item_name) <= 0:
+            return False
+
+        # Health Potion: αν ο παίκτης έχει ήδη full HP, δεν παίζει use sound
+        if item_name == "Health_Potion":
+            if self.player_sprite is not None and self.player_sprite.hp >= 0.999:
+                return False
+
+        # Energy Potion: αν ο παίκτης έχει ήδη full Energy, δεν παίζει use sound
+        if item_name == "Energy_Potion":
+            if self.player_sprite is not None and self.player_sprite.energy >= 0.999:
+                return False
+
+        # Για elixirs αρκεί να υπάρχει το item
+        return True
+    
+    # Σταματάει την τρέχουσα background μουσική
+    def stop_current_music(self):
+        if self.current_music_player is not None:
+            try:
+                arcade.stop_sound(self.current_music_player)
+            except Exception as ex:
+                print("Could not stop music:", ex)
+
+        self.current_music_player = None
+        self.current_music_key = None
+
+
+    # Παίζει background μουσική με loop
+    # Αν η ίδια μουσική παίζει ήδη, δεν την ξαναξεκινάει
+    def play_background_music(self, music_key, volume=0.25):
+        if self.current_music_key == music_key:
+            return
+
+        music_path = self.music_tracks.get(music_key)
+
+        if music_path is None:
+            return
+
+        self.stop_current_music()
+
+        try:
+            music = arcade.load_sound(music_path)
+            self.current_music_player = arcade.play_sound(music, volume=volume)
+            self.current_music_player.loop = True
+            self.current_music_key = music_key
+
+            print("Playing music:", music_key)
+
+        except Exception as ex:
+            print(f"Could not play music {music_key}:", ex)
+
+
+    # Επιλέγει ποια μουσική πρέπει να παίζει με βάση region, objective και death state
+    def update_background_music(self):
+        # Αν έχει παιχτεί defeat sound, δεν επιτρέπουμε να παίξει οποιαδήποτε άλλη background μουσική γιατί το παιχνίδι τελείωσε
+        if self.defeat_sound_played:
+            self.stop_current_music()
+            return
+
+        # Αν δεν έχει φορτωθεί ακόμα περιοχή, δεν παίζουμε τίποτα
+        if self.current_region_name is None:
+            return
+
+        # Αν το παιχνίδι τελείωσε, σταματάμε την background μουσική γιατί θα παίξουν Victory / Defeat sounds
+        if self.game_status in ("win", "loss"):
+            self.stop_current_music()
+            return
+
+        # Αν ο local player είναι νεκρός, παίζει death music
+        if self.player_sprite is not None and getattr(self.player_sprite, "dead", False):
+            self.play_background_music("player_dead", volume=0.25)
+            return
+
+        # Αν ολοκληρώθηκε το objective της περιοχής, παίζει objective finish μουσική μέχρι να αλλάξει περιοχή
+        if self.objective_complete:
+            self.play_background_music("objective_finish", volume=0.30)
+            return
+        
+        # Αν υπάρχει ενεργός δράκος στην περιοχή, παίζει dragon trigger music
+        if self.dragon_active_in_region:
+            self.play_background_music("dragon_trigger", volume=0.30)
+            return
+
+        # Αν απομένουν 5 ή λιγότεροι στόχοι, παίζει πιο έντονη μουσική
+        if self.objective_remaining > 0 and self.objective_remaining <= 5:
+            self.play_background_music("five_remaining", volume=0.28)
+            return
+
+        # Αλλιώς παίζει η κανονική μουσική της περιοχής
+        self.play_background_music(self.current_region_name, volume=0.25)
+
+    # Επιστρέφει prefix για τα voice sounds με βάση την κλάση του τοπικού παίκτη
+    def get_local_class_voice_prefix(self):
+        class_name = getattr(self.window, "class_name", "")
+
+        class_prefixes = {
+            "Warrior": "warrior",
+            "Mage": "mage",
+            "Marksman": "marksman",
+        }
+
+        return class_prefixes.get(class_name)
+
+
+    # Παίζει την entry ατάκα της κλάσης μόνο μία φορά, στο πρώτο movement input
+    def play_class_entry_once(self):
+        prefix = self.get_local_class_voice_prefix()
+
+        if prefix is None:
+            return
+
+        if self.character_entry_played:
+            return
+
+        self.play_sfx(f"{prefix}_entry", volume=0.55)
+        self.character_entry_played = True
+
+
+    # Παίζει τυχαίο hurt voice της κλάσης
+    def play_class_hurt_voice(self):
+        prefix = self.get_local_class_voice_prefix()
+
+        if prefix is None:
+            return
+
+        sound_name = random.choice([
+            f"{prefix}_hurt_1",
+            f"{prefix}_hurt_2",
+            f"{prefix}_hurt_3",
+        ])
+
+        self.play_sfx(sound_name, volume=0.55)
+
+
+    # Παίζει τυχαίο death voice της κλάσης
+    def play_class_death_voice(self):
+        prefix = self.get_local_class_voice_prefix()
+
+        if prefix is None:
+            return
+
+        sound_name = random.choice([
+            f"{prefix}_death_1",
+            f"{prefix}_death_2",
+            f"{prefix}_death_3",
+        ])
+
+        self.play_sfx(sound_name, volume=0.6)
+
+
+    # Παίζει κυκλικά moving voice όσο ο χαρακτήρας κινείται
+    def update_class_movement_voice(self, delta_time):
+        prefix = self.get_local_class_voice_prefix()
+
+        if prefix is None:
+            return
+
+        if self.game_status != "playing":
+            return
+
+        if self.player_sprite is not None and getattr(self.player_sprite, "dead", False):
+            return
+
+        is_moving = len(self.held_move) > 0
+
+        # Αν ο παίκτης σταματήσει, μηδενίζεται ο timer
+        # Όταν ξανακινηθεί, θα αρχίσει να μετράει από την αρχή
+        if not is_moving:
+            self.character_move_voice_timer = 0.0
+            return
+
+        self.character_move_voice_timer += delta_time
+
+        if self.character_move_voice_timer < self.character_move_voice_interval:
+            return
+
+        moving_sounds = [
+            f"{prefix}_moving_1",
+            f"{prefix}_moving_2",
+            f"{prefix}_moving_3",
+        ]
+
+        sound_name = moving_sounds[self.character_move_voice_index]
+        self.play_sfx(sound_name, volume=0.45)
+
+        # Πηγαίνει στο επόμενο moving sound κυκλικά
+        self.character_move_voice_index = (self.character_move_voice_index + 1) % len(moving_sounds)
+
+        # Reset timer μέχρι την επόμενη ατάκα
+        self.character_move_voice_timer = 0.0
+
+
+    # Παίζει ήχο αποτυχίας αγοράς item για την τρέχουσα κλάση
+    def play_class_buy_fail_sound(self):
+        prefix = self.get_local_class_voice_prefix()
+
+        if prefix is None:
+            return
+
+        self.play_sfx(f"{prefix}_buy_failed", volume=0.55)
+
+
+    # Παίζει ήχο αποτυχίας χρήσης item για την τρέχουσα κλάση
+    def play_class_use_fail_sound(self):
+        prefix = self.get_local_class_voice_prefix()
+
+        if prefix is None:
+            return
+
+        self.play_sfx(f"{prefix}_use_failed", volume=0.55)
 
     # Μέθοδος για την κίνηση του παίκτη πίσω από τα walls (έξω από το collision point)
     def sort_key(self, sprite):
@@ -835,7 +1259,7 @@ class MyGame(arcade.View):
             pstate = pos.get("state", IDLE)
             pdir = pos.get("dir", DOWN)
             phurt_seq = pos.get("hurt_seq", 0)
-            pdead = pos.get("dead", False)
+            pdead = bool(pos.get("dead", False))
 
             # Αν είναι ο τοπικός παίκτης, χρησιμοποιούμε το βασικό player_sprite
             if pid == CLIENT_PLAYER_ID:
@@ -852,6 +1276,8 @@ class MyGame(arcade.View):
                     self.actor_list.append(spr)
                 sprite = self.other_sprites[pid]
 
+            sprite.dead = pdead
+
             # Ενημερώνονται τα στοιχεία που εμφανίζονται πάνω στον παίκτη και στο UI
             sprite.nickname = nickname
             sprite.level = level
@@ -862,15 +1288,36 @@ class MyGame(arcade.View):
 
             # Για τον local player ενημερώνουμε επιπλέον στοιχεία του HUD, όπως gold, inventory, ενεργά elixirs και objective
             if pid == CLIENT_PLAYER_ID:
-                self.gold = int(gold)
+                new_gold = int(gold)
+                new_level = int(level)
+
+                new_objective_text = pos.get("objective_text", "")
+                new_objective_remaining = int(pos.get("objective_remaining", 0))
+                new_objective_complete = bool(pos.get("objective_complete", False))
+                new_objective_region = pos.get("region", self.current_region_name)
+
+                # Ήχος όταν αυξάνεται το gold
+                if self.last_gold_for_sound is not None and new_gold > self.last_gold_for_sound:
+                    self.play_sfx("gold_gain", volume=0.55)
+
+                # Ήχος όταν ανεβαίνει level
+                if self.last_level_for_sound is not None and new_level > self.last_level_for_sound:
+                    self.play_sfx("level_up", volume=0.6)
+
+                # Αποθηκεύουμε τις τελευταίες τιμές για τον επόμενο έλεγχο
+                self.last_gold_for_sound = new_gold
+                self.last_level_for_sound = new_level
+
+                # Κανονική ενημέρωση HUD/state
+                self.gold = new_gold
                 self.inventory = inventory
                 self.active_elixirs = active_elixirs
                 self.gold_text.text = f"Gold: {self.gold}"
 
-                self.objective_text = pos.get("objective_text", "")
-                self.objective_remaining = int(pos.get("objective_remaining", 0))
-                self.objective_complete = bool(pos.get("objective_complete", False))
-                self.objective_region = pos.get("region", self.current_region_name)
+                self.objective_text = new_objective_text
+                self.objective_remaining = new_objective_remaining
+                self.objective_complete = new_objective_complete
+                self.objective_region = new_objective_region
 
             # Για τους remote players το animation state συγχρονίζεται απευθείας από τον server
             # Για τον local player αποφεύγουμε να το κάνουμε εδώ, ώστε να μη χαλάει το τοπικό attack animation
@@ -880,10 +1327,41 @@ class MyGame(arcade.View):
             # Αν ο server δηλώσει ότι ο παίκτης πέθανε, ξεκινάμε death animation
             # Αν αυξήθηκε το hurt_seq, σημαίνει ότι δέχτηκε νέο hit και ενεργοποιούμε hurt feedback
             if pdead:
+                if pid == CLIENT_PLAYER_ID and not self.local_death_voice_played:
+                    self.play_class_death_voice()
+                    self.local_death_voice_played = True
+
                 sprite.trigger_death(pdir)
-            elif phurt_seq > getattr(sprite, "last_hurt_seq", 0):
-                sprite.last_hurt_seq = phurt_seq
-                sprite.trigger_hurt(pdir)
+
+            else:
+                if pid == CLIENT_PLAYER_ID:
+                    self.local_death_voice_played = False
+
+                # Αν ο server έκανε revive τον παίκτη, καθαρίζουμε τα death flags ώστε το sprite να μπορεί να ξαναεμφανιστεί και να κινηθεί
+                if getattr(sprite, "death_started", False) or getattr(sprite, "despawn", False):
+                    sprite.death_started = False
+                    sprite.death_anim_finished = False
+                    sprite.death_hold_until = 0.0
+                    sprite.despawn = False
+                    sprite.attack_finished = False
+                    sprite.attack_dir = None
+
+                    sprite.alpha = 255
+                    sprite.color = arcade.color.WHITE
+
+                    sprite.force_state(IDLE, pdir, reset=True)
+
+                    # Αν το sprite είχε αφαιρεθεί από τα sprite lists λόγω death/despawn, το ξαναβάζουμε στο actor_list
+                    if sprite not in self.actor_list:
+                        self.actor_list.append(sprite)
+
+                elif phurt_seq > getattr(sprite, "last_hurt_seq", 0):
+                    sprite.last_hurt_seq = phurt_seq
+
+                    if pid == CLIENT_PLAYER_ID:
+                        self.play_class_hurt_voice()
+
+                    sprite.trigger_hurt(pdir)
 
             # Αποθηκεύουμε τις δύο πιο πρόσφατες server θέσεις του παίκτη, αυτές χρησιμοποιούνται για ομαλή κίνηση αντί για απότομη τηλεμεταφορά
             buf = self.position_buffers.setdefault(pid, [])
@@ -912,6 +1390,8 @@ class MyGame(arcade.View):
                 self.snapshots.pop(pid, None)
                 self.interp_t.pop(pid, None)
 
+        self.dragon_active_in_region = False
+
         # Ενημέρωση εχθρών με βάση το server state
         for eid, epos in enemies_state.items():
             enemy_region = epos.get("region", "firstRegion")
@@ -931,6 +1411,10 @@ class MyGame(arcade.View):
             dead = epos.get("dead", False)
             hurt_seq = epos.get("hurt_seq", 0)
             attack_seq = epos.get("attack_seq", 0)
+            
+            # Αν υπάρχει ζωντανός δράκος στην τρέχουσα περιοχή, ενεργοποιείται η dragon trigger μουσική
+            if "dragon" in etype.lower() and not dead:
+                self.dragon_active_in_region = True
 
             # Αν δεν υπάρχει ακόμα sprite για τον συγκεκριμένο εχθρό, το δημιουργούμε
             if eid not in self.enemy_sprites:
@@ -1135,6 +1619,8 @@ class MyGame(arcade.View):
     # Μέθοδος που καλείται κάθε frame και συγχρονίζει τον client με τον server, στέλνει inputs, ενημερώνει animations, projectiles, UI και κάμερα
     def on_update(self, delta_time):
         self.process_server_state()         # Παίρνουμε το πιο πρόσφατο state από τον server και ενημερώνουμε sprites, UI και game status
+        self.update_background_music()      # Ενημέρωση μουσικής
+        self.update_class_movement_voice(delta_time) 
 
         self.heartbeat_timer += delta_time  
 
@@ -1166,8 +1652,22 @@ class MyGame(arcade.View):
         # Όταν ο server στείλει για πρώτη φορά win/loss, αποθηκεύουμε το τελικό αποτέλεσμα και ξεκινάμε μικρό timer πριν την επιστροφή στο menu
         if self.game_status in ("win", "loss"):
             self.returning_to_menu = True
-            self.game_end_return_timer = 3.0
+            self.game_end_return_timer = 6.0
             self.final_game_status = self.game_status
+
+            if not self.game_end_sound_played:
+                # Όταν τελειώσει το παιχνίδι, σταματάμε οποιαδήποτε background μουσική
+                self.stop_current_music()
+
+                if self.game_status == "win":
+                    self.play_sfx("victory", volume=0.7)
+                else:
+                    self.play_sfx("defeat", volume=0.7)
+
+                    self.defeat_sound_played = True
+
+                self.game_end_sound_played = True
+
             return
 
         # Εφαρμόζουμε interpolation/smoothing ώστε η κίνηση παικτών και εχθρών να φαίνεται ομαλή ανάμεσα στα server updates
@@ -1331,6 +1831,7 @@ class MyGame(arcade.View):
     # Βοηθητική μέθοδος που στέλνει attack request στον server μέσω του networking thread
     def send_attack_to_server(self, direction, attack_id):
         if NETWORK_LOOP is not None:
+            self.play_attack_sound(attack_id)   # Ηχητικό εφέ επίθεσης
             asyncio.run_coroutine_threadsafe(send_attack(direction, attack_id), NETWORK_LOOP)
     
     # Μέθοδος για τα projectile των ranged εχθρών
@@ -1414,12 +1915,29 @@ class MyGame(arcade.View):
             if item_to_buy is not None and NETWORK_LOOP is not None:
                 # Με Shift γίνεται αγορά item
                 if modifiers & arcade.key.MOD_SHIFT:
+                    # Παίζει ήχος αγοράς μόνο αν τοπικά φαίνεται ότι υπάρχει αρκετό gold και δεν έχει γεμίσει το max stack
+                    if self.can_buy_item_locally(item_to_buy):
+                        self.play_sfx("item_buy", volume=0.5)
+                    
+                    # Αν δεν υπάρχει αρκετό gold ή έχει γεμίσει το stack, παίζει fail voice
+                    else:
+                        self.play_class_buy_fail_sound()
+
                     asyncio.run_coroutine_threadsafe(
                         send_buy_item(item_to_buy),
                         NETWORK_LOOP
                     ) 
+
                 # Χωρίς Shift γίνεται χρήση item
                 else:
+                    # Παίζει ήχος χρήσης μόνο αν ο client βλέπει ότι το item υπάρχει στο inventory.
+                    if self.can_use_item_locally(item_to_buy):
+                        self.play_sfx("potion_use", volume=0.5)
+
+                    # Αν ο παίκτης δεν έχει το item, παίζει fail voice
+                    else:
+                        self.play_class_use_fail_sound()
+
                     asyncio.run_coroutine_threadsafe(
                         send_use_item(item_to_buy),
                         NETWORK_LOOP
@@ -1430,6 +1948,7 @@ class MyGame(arcade.View):
         # Πλήκτρα κίνησης WASD
         # Τα αποθηκεύουμε πάντα, ακόμα και αν ο παίκτης βρίσκεται σε attack animation, ώστε να ξέρουμε ποια κατεύθυνση κρατάει ο χρήστης
         if key in (arcade.key.W, arcade.key.A, arcade.key.S, arcade.key.D):
+            self.play_class_entry_once()
             self.held_move.add(key)
 
             # Το πλήκτρο που πατήθηκε τελευταίο μπαίνει στο τέλος της λίστας, έτσι εφαρμόζεται λογική last pressed wins
@@ -1545,7 +2064,7 @@ def main():
     # Χρησιμοποιούμε global μεταβλητές που ελέγχουν αν ο server δέχτηκε τον client και αν στάλθηκε DISCONNECT
     global SERVER_ACCEPTED, DISCONNECT_SENT
 
-    window = GameWindow(1000, 800, "Celestial Lands")   # Δημιουργία του κεντρικού παραθύρου του παιχνιδιού
+    window = GameWindow(1280, 720, "Celestial Lands")   # Δημιουργία του κεντρικού παραθύρου του παιχνιδιού
     window.game_mode = None                             # Μεταβλητή που δηλώνει τον τύπο παιχνιδιού
     window.network_started = False                      # Flag για να μη ξεκινήσει το networking thread πάνω από μία φορά
 

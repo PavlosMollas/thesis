@@ -1,7 +1,8 @@
 import arcade
 import sqlite3
+from db_path import get_db_path
 
-DB_PATH = "MMORPG_DB.db"
+DB_PATH = get_db_path()
 
 # Μέθοδος που αναζητά παίκτη στη βάση με βάση το nickname
 def get_player_by_nickname(nickname: str):

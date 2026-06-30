@@ -1,7 +1,8 @@
 import sqlite3
 from datetime import datetime
+from db_path import get_db_path
 
-DB_PATH = "MMORPG_DB.db"        # Path της βάσης δεδομένων SQLite
+DB_PATH = get_db_path()        # Path της βάσης δεδομένων SQLite
 
 # Μέθοδος που δημιουργεί και επιστρέφει σύνδεση με τη βάση δεδομένων
 def db_conn():
@@ -82,59 +83,6 @@ def get_player_gold(player_id: str):
 
     return row[0]
 
-# Μέθοδος που προσθέτει item στο inventory του παίκτη, χωρίς να ξεπερνά το Max_stack
-def add_item_to_player(player_id: str, item_name: str, quantity: int = 1):
-    conn = db_conn()
-    cur = conn.cursor()
-
-    # Παίρνουμε το μέγιστο επιτρεπτό stack του item από τον πίνακα Item
-    cur.execute("""
-        SELECT Max_stack
-        FROM Item
-        WHERE Item_name = ?;
-    """, (item_name,))
-
-    row = cur.fetchone()
-
-    # Αν το item δεν υπάρχει στη βάση, σταματάμε με error
-    if row is None:
-        conn.close()
-        raise ValueError(f"Item does not exist: {item_name}")
-
-    max_stack = row[0]
-
-    # Ελέγχουμε αν ο παίκτης έχει ήδη το item
-    cur.execute("""
-        SELECT Quantity
-        FROM Item_Inventory
-        WHERE Player_id = ? AND Item_name = ?;
-    """, (player_id, item_name))
-
-    inv_row = cur.fetchone()
-
-    # Αν ο παίκτης δεν έχει ήδη το item, δημιουργείται νέα εγγραφή στο inventory
-    if inv_row is None:
-        new_quantity = min(quantity, max_stack)
-
-        cur.execute("""
-            INSERT INTO Item_Inventory(Player_id, Item_name, Quantity)
-            VALUES (?, ?, ?);
-        """, (player_id, item_name, new_quantity))
-
-    # Αν υπάρχει ήδη, αυξάνεται η ποσότητα μέχρι το όριο του max stack
-    else:
-        current_quantity = inv_row[0]
-        new_quantity = min(current_quantity + quantity, max_stack)
-
-        cur.execute("""
-            UPDATE Item_Inventory
-            SET Quantity = ?
-            WHERE Player_id = ? AND Item_name = ?;
-        """, (new_quantity, player_id, item_name))
-
-    conn.commit()
-    conn.close()
-
 # Μέθοδος που επιστρέφει όλα τα items που έχει ο παίκτης
 def get_player_inventory(player_id: str):
     conn = db_conn()
@@ -158,6 +106,141 @@ def get_player_inventory(player_id: str):
     conn.close()
 
     return rows
+
+# Προσθέτει ένα item στο inventory του παίκτη χωρίς να αφαιρεί gold
+# Χρησιμοποιείται για mission rewards
+def add_item_to_player(player_id: str, item_name: str, quantity: int = 1):
+    conn = db_conn()
+    cur = conn.cursor()
+
+    try:
+        # Παίρνουμε πληροφορίες για το item
+        cur.execute("""
+            SELECT Stackable, Max_stack
+            FROM Item
+            WHERE Item_name = ?;
+        """, (item_name,))
+
+        item_row = cur.fetchone()
+
+        if item_row is None:
+            return False, "Item not found"
+
+        stackable, max_stack = item_row
+
+        if not stackable:
+            max_stack = 1
+
+        # Ελέγχουμε αν ο παίκτης έχει ήδη το item
+        cur.execute("""
+            SELECT Quantity
+            FROM Item_Inventory
+            WHERE Player_id = ? AND Item_name = ?;
+        """, (player_id, item_name))
+
+        inv_row = cur.fetchone()
+
+        if inv_row is None:
+            new_quantity = min(quantity, max_stack)
+
+            cur.execute("""
+                INSERT INTO Item_Inventory(Player_id, Item_name, Quantity)
+                VALUES (?, ?, ?);
+            """, (player_id, item_name, new_quantity))
+
+        else:
+            current_quantity = inv_row[0]
+            new_quantity = min(current_quantity + quantity, max_stack)
+
+            if new_quantity == current_quantity:
+                return False, "Max stack reached"
+
+            cur.execute("""
+                UPDATE Item_Inventory
+                SET Quantity = ?
+                WHERE Player_id = ? AND Item_name = ?;
+            """, (new_quantity, player_id, item_name))
+
+        conn.commit()
+        return True, "Item added"
+
+    except Exception as ex:
+        conn.rollback()
+        return False, str(ex)
+
+    finally:
+        conn.close()
+    
+# Χρησιμοποιείται πριν δοθεί reward, ώστε να μη δοθεί item που έχει ήδη φτάσει το max stack
+def can_player_receive_item(player_id, item_name):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    try:
+        # Παίρνουμε τα στοιχεία του item από τη βάση
+        cur.execute("""
+            SELECT Stackable, Max_stack
+            FROM Item
+            WHERE Item_name = ?;
+        """, (item_name,))
+
+        item_row = cur.fetchone()
+
+        # Αν το item δεν υπάρχει στη βάση, δεν μπορεί να δοθεί
+        if item_row is None:
+            conn.close()
+            return False
+
+        stackable, max_stack = item_row
+
+        # Αν το item δεν είναι stackable, θεωρούμε ότι μπορεί να υπάρχει μόνο 1 φορά
+        if not stackable:
+            max_stack = 1
+
+        # Ελέγχουμε αν ο παίκτης έχει ήδη αυτό το item στο inventory
+        cur.execute("""
+            SELECT Quantity
+            FROM Item_Inventory
+            WHERE Player_id = ? AND Item_name = ?;
+        """, (player_id, item_name))
+
+        inv_row = cur.fetchone()
+
+        conn.close()
+
+        # Αν δεν το έχει καθόλου, μπορεί να το πάρει
+        if inv_row is None:
+            return True
+
+        current_quantity = inv_row[0]
+
+        # Αν η ποσότητα είναι μικρότερη από το max stack, μπορεί να πάρει άλλο ένα
+        return current_quantity < max_stack
+
+    except Exception as ex:
+        conn.close()
+        print("Error checking item reward availability:", ex)
+        return False
+
+# Ελέγχει αν ο παίκτης έχει τουλάχιστον 1 ποσότητα από ένα item
+# Χρησιμοποιείται πριν εφαρμοστεί το effect, ώστε να μη χρησιμοποιούνται items που δεν υπάρχουν στο inventory
+def player_has_item(player_id: str, item_name: str):
+    conn = db_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT Quantity
+        FROM Item_Inventory
+        WHERE Player_id = ? AND Item_name = ?;
+    """, (player_id, item_name))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if row is None:
+        return False
+
+    return row[0] > 0
 
 # Μέθοδος που εκτελεί αγορά item για έναν παίκτη, ελέγχοντας gold και διαθέσιμο χώρο στο stack
 def buy_item_for_player(player_id: str, item_name: str, quantity: int = 1):
