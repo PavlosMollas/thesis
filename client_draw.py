@@ -345,6 +345,18 @@ def draw_session_screen(self):
         (0, 0, 0, 230)
     )
 
+    # Οδηγίες στο πάνω μέρος της οθόνης
+    instructions_start_y = screen_h - 70
+    line_spacing = 24
+
+    for index, text in enumerate(self.session_instruction_texts):
+        text.x = screen_w / 2
+        text.y = instructions_start_y - index * line_spacing
+        text.draw()
+
+    # Τα status μηνύματα του lobby μπαίνουν πιο κάτω
+    status_center_y = screen_h / 2 - 95
+
     if self.my_session_phase == "lobby":
         self.session_title_text.text = "Waiting for players..."
         self.session_subtitle_text.text = f"Game starts in {self.lobby_countdown}s"
@@ -358,7 +370,7 @@ def draw_session_screen(self):
         bar_width = 360
         bar_height = 18
         left = screen_w / 2 - bar_width / 2
-        bottom = screen_h / 2 - 70
+        bottom = status_center_y - 85
 
         arcade.draw_lbwh_rectangle_filled(
             left,
@@ -394,13 +406,13 @@ def draw_session_screen(self):
         return
 
     self.session_title_text.x = screen_w / 2
-    self.session_title_text.y = screen_h / 2 + 60
+    self.session_title_text.y = status_center_y + 60
 
     self.session_subtitle_text.x = screen_w / 2
-    self.session_subtitle_text.y = screen_h / 2 + 15
+    self.session_subtitle_text.y = status_center_y + 15
 
     self.session_progress_text.x = screen_w / 2
-    self.session_progress_text.y = screen_h / 2 - 35
+    self.session_progress_text.y = status_center_y - 35
 
     self.session_title_text.draw()
     self.session_subtitle_text.draw()
@@ -686,3 +698,50 @@ def draw_local_player_hud_bars(self):
 
     self.hud_xp_label_text.draw()
     self.hud_xp_value_text.draw()
+
+# Σχεδιάζει μήνυμα για πιθανό revive όταν ο local player έχει πεθάνει
+def draw_revive_waiting_message(self):
+    # Αν το παιχνίδι δεν παίζεται, δεν εμφανίζεται μήνυμα
+    if self.game_status != "playing":
+        return
+
+    # Αν δεν υπάρχει local player sprite, δεν γίνεται τίποτα
+    if self.player_sprite is None:
+        return
+
+    # Αν ο παίκτης δεν είναι νεκρός, δεν εμφανίζεται μήνυμα
+    if not getattr(self.player_sprite, "dead", False):
+        return
+
+    screen_w = self.window.width
+    screen_h = self.window.height
+
+    box_width = 620
+    box_height = 70
+
+    center_x = screen_w / 2
+    center_y = screen_h / 2 + 120
+
+    left = center_x - box_width / 2
+    bottom = center_y - box_height / 2
+
+    arcade.draw_lbwh_rectangle_filled(
+        left,
+        bottom,
+        box_width,
+        box_height,
+        (0, 0, 0, 190)
+    )
+
+    arcade.draw_lbwh_rectangle_outline(
+        left,
+        bottom,
+        box_width,
+        box_height,
+        arcade.color.WHITE,
+        1
+    )
+
+    self.revive_message_text.x = center_x
+    self.revive_message_text.y = center_y
+    self.revive_message_text.draw()

@@ -436,6 +436,24 @@ class MyGame(arcade.View):
         self.session_subtitle_text = arcade.Text("", 0, 0, arcade.color.LIGHT_GRAY, font_size=18, anchor_x="center", anchor_y="center")
         self.session_progress_text = arcade.Text("", 0, 0, arcade.color.WHITE, font_size=22, anchor_x="center", anchor_y="center")
 
+        # Οδηγίες που εμφανίζονται στο waiting screen
+        self.session_instruction_lines = [
+            "Movement: W A S D | Basic ability: SPACE | Skill 1: Q | Skill 2: E",
+            "Inventory: TAB | You can carry up to 2 potions and only 1 elixir of each type.",
+            "Complete the objectives to proceed to the next area.",
+            "Only then will the portal open to the next area.",
+            "Upon completing the objective, you will receive extra gold and a random item (potion or elixir).",
+            "If a player dies, they can be revived once the team completes the objective.",
+        ]
+
+        self.session_instruction_texts = []
+
+        for line in self.session_instruction_lines:
+            self.session_instruction_texts.append(arcade.Text(line, 0, 0, arcade.color.WHITE, font_size=14, anchor_x="center", anchor_y="center"))
+
+        # Μήνυμα που εμφανίζεται όταν ο παίκτης έχει πεθάνει, για υπάρχει πιθανό revive
+        self.revive_message_text = arcade.Text("Once your team completes the objective, you will be revived.", 0, 0, arcade.color.WHITE, font_size=18, anchor_x="center", anchor_y="center")
+
         # Text για timer παιχνιδιού
         self.timer_text = arcade.Text("00:00",10, 10, arcade.color.WHITE, font_size=20)
 
@@ -539,6 +557,22 @@ class MyGame(arcade.View):
             "marksman_moving_3": arcade.load_sound("assets/sounds/Character/marksmanMoving3.wav"),
             "marksman_buy_failed": arcade.load_sound("assets/sounds/Character/marksmanItemBuyFailed.wav"),
             "marksman_use_failed": arcade.load_sound("assets/sounds/Character/marksmanItemUseFailed.wav"),
+
+            "dragon_attack": arcade.load_sound("assets/sounds/Enemies/dragonAttack.mp3"),
+            "dragon_death": arcade.load_sound("assets/sounds/Enemies/dragonDeath.mp3"),
+            "dragon_hurt": arcade.load_sound("assets/sounds/Enemies/dragonHurt.mp3"),
+
+            "magic_goblin_attack": arcade.load_sound("assets/sounds/Enemies/magic_goblinAttack.ogg"),
+            "magic_goblin_death": arcade.load_sound("assets/sounds/Enemies/magic_goblinDeath.mp3"),
+            "magic_goblin_hurt": arcade.load_sound("assets/sounds/Enemies/magic_goblinHurt.ogg"),
+
+            "orc_attack": arcade.load_sound("assets/sounds/Enemies/orcAttack.wav"),
+            "orc_death": arcade.load_sound("assets/sounds/Enemies/orcDeath.ogg"),
+            "orc_hurt": arcade.load_sound("assets/sounds/Enemies/orcHurt.ogg"),
+
+            "wolf_attack": arcade.load_sound("assets/sounds/Enemies/wolfAttack.wav"),
+            "wolf_death": arcade.load_sound("assets/sounds/Enemies/wolfDeath.ogg"),
+            "wolf_hurt": arcade.load_sound("assets/sounds/Enemies/wolfHurt.ogg"),
         }
 
         self.last_gold_for_sound = None
@@ -552,6 +586,9 @@ class MyGame(arcade.View):
         self.character_move_voice_interval = 4.0
         self.character_move_voice_index = 0
         self.local_death_voice_played = False
+
+        # Enemy ids για τα οποία έχει ήδη παιχτεί death sound
+        self.enemy_death_sound_played = set()
 
         ### Music ###
         self.music_tracks = {
@@ -868,6 +905,35 @@ class MyGame(arcade.View):
 
         self.play_sfx(f"{prefix}_use_failed", volume=0.55)
 
+    # Επιστρέφει το sound prefix του enemy με βάση το type που στέλνει ο server
+    def get_enemy_sound_prefix(self, enemy_type):
+        enemy_type = str(enemy_type).lower()
+
+        if "dragon" in enemy_type:
+            return "dragon"
+
+        if "magic_goblin" in enemy_type or "goblin" in enemy_type:
+            return "magic_goblin"
+
+        if "orc" in enemy_type:
+            return "orc"
+
+        if "wolf" in enemy_type:
+            return "wolf"
+
+        return None
+
+
+    # Παίζει sound για enemy action
+    def play_enemy_sound(self, enemy_type, action, volume=0.45):
+        prefix = self.get_enemy_sound_prefix(enemy_type)
+
+        if prefix is None:
+            return
+
+        sound_name = f"{prefix}_{action}"
+        self.play_sfx(sound_name, volume=volume)
+
     # Μέθοδος για την κίνηση του παίκτη πίσω από τα walls (έξω από το collision point)
     def sort_key(self, sprite):
         offset = 0
@@ -1111,6 +1177,7 @@ class MyGame(arcade.View):
         self.gold_text.draw()
 
         client_draw.draw_objective_message(self)        # Προσωρινό μήνυμα objective στο κέντρο της οθόνης
+        client_draw.draw_revive_waiting_message(self)   # Μήνυμα για revive όταν ο παίκτης πεθάνει
 
         client_draw.draw_local_player_hud_bars(self)    # Μεγάλες μπάρες HP / Energy αριστερά από τα abilities
 
@@ -1411,6 +1478,7 @@ class MyGame(arcade.View):
             dead = epos.get("dead", False)
             hurt_seq = epos.get("hurt_seq", 0)
             attack_seq = epos.get("attack_seq", 0)
+            attack_sound_seq = epos.get("attack_sound_seq", 0)
             
             # Αν υπάρχει ζωντανός δράκος στην τρέχουσα περιοχή, ενεργοποιείται η dragon trigger μουσική
             if "dragon" in etype.lower() and not dead:
@@ -1423,12 +1491,26 @@ class MyGame(arcade.View):
 
                 enemy_scale = ENEMY_SCALES.get(etype, 1.9)
                 espr = EnemySprite(etype, self.enemy_animation_dict[etype], scale=enemy_scale)
+
+                # Αρχικοποιούμε τα sequence counters με τις τιμές που έρχονται ήδη από τον server,
+                # ώστε να μην παιχτούν παλιά sounds όταν ο enemy εμφανίζεται πρώτη φορά στον client
+                espr.last_attack_sound_seq = attack_sound_seq
+                espr.last_attack_seq = attack_seq
+                espr.last_hurt_seq = hurt_seq
                 
                 self.enemy_sprites[eid] = espr
                 self.enemy_list.append(espr)
                 self.actor_list.append(espr)   # Ο εχθρός προστίθεται και στο actor_list, ώστε να συμμετέχει στο depth sorting
 
             espr = self.enemy_sprites[eid]
+
+            # Παίζει enemy attack sound μόνο όταν ο server επιβεβαιώσει ότι η επίθεση έγινε
+            if (
+                not dead
+                and attack_sound_seq > getattr(espr, "last_attack_sound_seq", 0)
+            ):
+                espr.last_attack_sound_seq = attack_sound_seq
+                self.play_enemy_sound(etype, "attack", volume=0.45)
 
             # Αν είναι νέος enemy, βάζουμε αρχικά τη θέση του απευθείας
             if eid not in self.enemy_position_buffers:
@@ -1460,11 +1542,20 @@ class MyGame(arcade.View):
 
             # Αν ο enemy είναι νεκρός, ενεργοποιούμε death animation
             if dead:
+                # Death sound μόνο μία φορά για κάθε enemy
+                if eid not in self.enemy_death_sound_played:
+                    self.play_enemy_sound(etype, "death", volume=0.50)
+                    self.enemy_death_sound_played.add(eid)
+
                 espr.trigger_death(edir)
 
             # Αν έχει δεχτεί νέο hit, ενεργοποιούμε hurt animation
             elif hurt_seq > getattr(espr, "last_hurt_seq", 0):
                 espr.last_hurt_seq = hurt_seq
+
+                # Hurt sound κάθε φορά που ο enemy δέχεται νέο hit
+                self.play_enemy_sound(etype, "hurt", volume=0.45)
+
                 espr.trigger_hurt(edir)
 
             # Αν ξεκίνησε νέο attack σύμφωνα με τον server, κάνουμε reset το attack animation ώστε να παίξει από την αρχή
@@ -1498,6 +1589,8 @@ class MyGame(arcade.View):
                 self.enemy_position_buffers.pop(eid, None)
                 self.enemy_snapshots.pop(eid, None)
                 self.enemy_interp_t.pop(eid, None)
+
+                self.enemy_death_sound_played.discard(eid)  # Καθαρίζουμε το death sound όταν πεθάνει ο εχθρός
 
     # Μέθοδος που κάνει interpolation και extrapolation ώστε η κίνηση των εχθρών να φαίνεται ομαλή
     def apply_enemy_smoothing(self, delta_time):

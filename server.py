@@ -171,6 +171,7 @@ for region_name, region in regions.items():
             "next_attack_time": 0.0,    
             "pending_hit_time": 0.0,   # Χρονική στιγμή στην οποία θα εφαρμοστεί το damage μετά το windup της επίθεσης
             "attack_seq": 0,           # Μετρητής attack animation που αυξάνεται κάθε φορά που ξεκινά νέα επίθεση, ώστε οι clients να κάνουν reset το attack animation
+            "attack_sound_seq": 0,     # Μεταβλητή για sound μετά από hit
 
             # Τρέχων στόχος και μεταβλητές για stuck handling
             "target": None,
@@ -1117,6 +1118,9 @@ def apply_enemy_attacks():
                 can_hit = d2 <= e["attack_range"]
 
             if can_hit:
+                # Εδώ αυξάνουμε το attack_sound_seq ώστε ο client να παίξει attack sound
+                e["attack_sound_seq"] = e.get("attack_sound_seq", 0) + 1
+
                 # Υπολογισμός τελικής ζημιάς μετά το resist του παίκτη
                 player_resist = tp.get("resist", 0)
                 dmg = max(0, e["damage"] - player_resist)
@@ -1409,6 +1413,7 @@ def reset_enemies():
                 "next_attack_time": 0.0,
                 "pending_hit_time": 0.0,
                 "attack_seq": 0,
+                "attack_sound_seq": 0,
 
                 "target": None,
 
@@ -2542,6 +2547,7 @@ async def broadcast_state():
                 "dead": e.get("dead", False),
                 "hurt_seq": e.get("hurt_seq", 0),
                 "attack_seq": e.get("attack_seq", 0),
+                "attack_sound_seq": e.get("attack_sound_seq", 0),
             }
 
         # Έλεγχος loss, finished πριν σταλεί το state στους client
